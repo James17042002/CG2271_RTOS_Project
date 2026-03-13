@@ -15,6 +15,7 @@
 !freertos/
 !startup/
 !utilities/
+!ESP32_code/
 
 # 4. Allow IDE Project metadata (Mandatory for teammates)
 !.project
