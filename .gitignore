@@ -1,0 +1,32 @@
+# 1. Ignore everything by default
+/*
+
+# 2. Allow Git and Project documentation
+!.gitignore
+!README.md
+
+# 3. Allow all physical source and library folders
+!source/
+!board/
+!component/
+!CMSIS/
+!device/
+!drivers/
+!freertos/
+!startup/
+!utilities/
+
+# 4. Allow IDE Project metadata (Mandatory for teammates)
+!.project
+!.cproject
+!.settings/
+
+# 5. Block the junk
+**/Debug/
+**/Release/
+*.o
+*.d
+*.elf
+*.bin
+*.map
+.DS_Store
