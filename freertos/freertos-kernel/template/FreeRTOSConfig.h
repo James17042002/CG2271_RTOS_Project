@@ -76,11 +76,11 @@
 #endif
 
 #if !defined(configUSE_PREEMPTION)
-#define configUSE_PREEMPTION  0
+#define configUSE_PREEMPTION  1
 #endif
 
 #if !defined(configUSE_TIME_SLICING)
-#define configUSE_TIME_SLICING  0
+#define configUSE_TIME_SLICING  1
 #endif
 
 #if !defined(configSUPPORT_DYNAMIC_ALLOCATION)
