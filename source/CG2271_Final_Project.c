@@ -15,7 +15,9 @@
 #define RED_PIN     31  // PTE31
 #define GREEN_PIN   5   // PTD5
 #define BLUE_PIN    29  // PTE29
-#define SW_PIN      4   // PTA4
+#define HALL_PIN     4   // PTA4
+#define SHOCK_PIN    5   // PTA5
+
 
 // Buzzer Pin
 #define BUZZER_PIN  0   // PTB0
@@ -24,12 +26,13 @@ typedef enum tl {
     RED, GREEN, BLUE
 } TLED;
 
+
+
+// Comms
 #define BAUD_RATE 9600
 #define UART_TX_PTE22   22
 #define UART_RX_PTE23   23
 #define UART2_INT_PRIO  128
-
-
 
 #define MAX_LIGHT_VALUE 1023
 #define MAX_MSG_LEN     256
@@ -159,19 +162,38 @@ void initIRQ() {
     NVIC_DisableIRQ(PORTA_IRQn);
     SIM->SCGC5 |= SIM_SCGC5_PORTA_MASK;
 
-    PORTA->PCR[SW_PIN] &= ~PORT_PCR_MUX_MASK;
-    PORTA->PCR[SW_PIN] = PORT_PCR_MUX(1);
 
-    GPIOA->PDDR &= ~(1 << SW_PIN);
+    // -------- SHOCK PIN --------
+    PORTA->PCR[SHOCK_PIN] &= ~PORT_PCR_MUX_MASK;
+    PORTA->PCR[SHOCK_PIN] |= PORT_PCR_MUX(1);
 
-    PORTA->PCR[SW_PIN] &= ~PORT_PCR_PS_MASK;
-    PORTA->PCR[SW_PIN] |= PORT_PCR_PS(1);
+    GPIOA->PDDR &= ~(1 << SHOCK_PIN);
 
-    PORTA->PCR[SW_PIN] &= ~PORT_PCR_PE_MASK;
-    PORTA->PCR[SW_PIN] |= PORT_PCR_PE(1);
+    // Shock sensor sends a low during shock, set pull-up resistors
+    PORTA->PCR[SHOCK_PIN] &= ~PORT_PCR_PS_MASK;
+    PORTA->PCR[SHOCK_PIN] |= PORT_PCR_PS(1);
 
-    PORTA->PCR[SW_PIN] &= ~PORT_PCR_IRQC_MASK;
-    PORTA->PCR[SW_PIN] |= PORT_PCR_IRQC(0b1001);
+    PORTA->PCR[SHOCK_PIN] &= ~PORT_PCR_PE_MASK;
+    PORTA->PCR[SHOCK_PIN] |= PORT_PCR_PE(1);
+
+    PORTA->PCR[SHOCK_PIN] &= ~PORT_PCR_IRQC_MASK;
+    PORTA->PCR[SHOCK_PIN] |= PORT_PCR_IRQC(0b1001); //falling edge
+
+
+    // -------- HALL PIN --------
+    PORTA->PCR[HALL_PIN] &= ~PORT_PCR_MUX_MASK;
+    PORTA->PCR[HALL_PIN] |= PORT_PCR_MUX(1);
+
+    GPIOA->PDDR &= ~(1 << HALL_PIN);
+
+    // disable pull-up/down resistors,
+	// Stable HIGH when no magnet
+	// LOW when magnet present
+    PORTA->PCR[HALL_PIN] &= ~PORT_PCR_PE_MASK;
+    PORTA->PCR[HALL_PIN] |= PORT_PCR_PE(0);
+
+    PORTA->PCR[HALL_PIN] &= ~PORT_PCR_IRQC_MASK;
+    PORTA->PCR[HALL_PIN] |= PORT_PCR_IRQC(0b1011); // triggers on either edge
 
     NVIC_SetPriority(PORTA_IRQn, 0);
     NVIC_ClearPendingIRQ(PORTA_IRQn);
@@ -179,56 +201,68 @@ void initIRQ() {
 }
 
 int blink = 0;
-SemaphoreHandle_t sema;
+SemaphoreHandle_t shock_sema;
+SemaphoreHandle_t hall_sema;
+
 
 void PORTA_IRQHandler() {
-    static int count = 0;
     BaseType_t hpw = pdFALSE;
-    count++;
-    PRINTF("ISR triggered. count = %d\r\n", count);
-    NVIC_ClearPendingIRQ(PORTA_IRQn);
 
-    if(PORTA->ISFR & (1 << SW_PIN)) {
-        PORTA->ISFR |= (1 << SW_PIN);
-        if((count % 5) == 0) {
-            xSemaphoreGiveFromISR(sema, &hpw);
-            portYIELD_FROM_ISR(hpw);
-        }
+    uint32_t flags = PORTA->ISFR;
+
+    if (flags & (1 << SHOCK_PIN)) {
+        PORTA->ISFR |= (1 << SHOCK_PIN);
+        xSemaphoreGiveFromISR(shock_sema, &hpw);
     }
+
+    if (flags & (1	 << HALL_PIN)) {
+        PORTA->ISFR |= (1 << HALL_PIN);
+        xSemaphoreGiveFromISR(hall_sema, &hpw);
+    }
+
+    portYIELD_FROM_ISR(hpw);
 }
+
 
 void UART2_FLEXIO_IRQHandler(void)
 {
-    static int recv_ptr = 0, send_ptr = 0;
-    char rx_data;
-    static char recv_buffer[MAX_MSG_LEN];
+	// Send and receive pointers
+	static int recv_ptr=0, send_ptr=0;
+	char rx_data;
+	static char recv_buffer[MAX_MSG_LEN];
 
-    if(UART2->S1 & UART_S1_TDRE_MASK)
-    {
-        if(send_buffer[send_ptr] == '\0') {
-            send_ptr = 0;
-            UART2->C2 &= ~UART_C2_TIE_MASK;
-            UART2->C2 &= ~UART_C2_TE_MASK;
-        }
-        else {
-            UART2->D = send_buffer[send_ptr++];
-        }
-    }
+	// NVIC_ClearPendingIRQ(UART2_FLEXIO_IRQn);
+	if(UART2->S1 & UART_S1_TDRE_MASK) // Send data
+	{
+		if(send_buffer[send_ptr] == '\0') {
+			send_ptr = 0;
 
-    if(UART2->S1 & UART_S1_RDRF_MASK)
-    {
-        TMessage msg;
-        rx_data = UART2->D;
-        recv_buffer[recv_ptr++] = rx_data;
-        if(rx_data == '\n') {
-            recv_buffer[recv_ptr] = '\0';
-            BaseType_t hpw;
-            strncpy(msg.message, recv_buffer, MAX_MSG_LEN);
-            xQueueSendFromISR(queue, (void *)&msg, &hpw);
-            portYIELD_FROM_ISR(hpw);
-            recv_ptr = 0;
-        }
-    }
+			// Disable the transmit interrupt
+			UART2->C2 &= ~UART_C2_TIE_MASK;
+
+			// Disable the transmitter
+			UART2->C2 &= ~UART_C2_TE_MASK;
+		}
+		else {
+			UART2->D = send_buffer[send_ptr++];
+		}
+	}
+
+	if(UART2->S1 & UART_S1_RDRF_MASK)
+	{
+		TMessage msg;
+		rx_data = UART2->D;
+		recv_buffer[recv_ptr++] = rx_data;
+		if(rx_data == '\n') {
+			// Copy over the string
+			BaseType_t hpw; // higher prio waiting
+			recv_buffer[recv_ptr]='\0';
+			strncpy(msg.message, recv_buffer, MAX_MSG_LEN);
+			xQueueSendFromISR(queue, (void *)&msg, &hpw);
+			portYIELD_FROM_ISR(hpw);
+			recv_ptr = 0;
+		}
+	}
 }
 
 void sendMessage(char *message) {
@@ -249,7 +283,7 @@ static void recvTask(void *p) {
             if(sscanf(msg.message, "LIGHT:%d", &light) == 1) {
 				PRINTF("Parsed Light: %d\r\n", light);
 
-				// To flip logic in actual project
+				// To flip logic in actual project, currently high light reading is actually darkness
                 if(light > 500) {
                     buzzerOn();
                     PRINTF("Alert: Buzzer ON, Red LED ON\r\n");
@@ -261,9 +295,13 @@ static void recvTask(void *p) {
 
             // 2. Parse Temperature and Humidity Data
             else if(sscanf(msg.message, "TEMP:%f,HUMI:%f", &temp, &humi) == 2) {
-                PRINTF("Parsed Temp: %.2f, Humi: %.2f\r\n", temp, humi);
 
-                if(humi > 70.0) {
+            	// manually print floats, printf does not support floating point in embedded toolchains
+            	PRINTF("Parsed Temp: %d.%02d, Humi: %d.%02d\r\n",
+            	       (int)temp, (int)(temp * 100) % 100,
+            	       (int)humi, (int)(humi * 100) % 100);
+
+                if(humi > 75.0) {
                 	onLED(BLUE);
                     PRINTF("Alert: High Humidity, Blue LED ON\r\n");
                 } else {
@@ -287,18 +325,41 @@ static void recvTask(void *p) {
     }
 }
 
-static void blinkLEDTask(void *p) {
-    PRINTF("BlinkLED Task Started\r\n");
-    while(1) {
-        if(xSemaphoreTake(sema, portMAX_DELAY) == pdTRUE) {
-            toggleLED(RED);
-            blink = 0;
-        }
-        else {
-            vTaskDelay(pdMS_TO_TICKS(250));
+void shockTask(void *p) {
+    TickType_t last_time = 0;
+	char buffer[MAX_MSG_LEN];
+    while (1) {
+        xSemaphoreTake(shock_sema, portMAX_DELAY);
+
+        TickType_t now = xTaskGetTickCount();
+
+        if ((now - last_time) > pdMS_TO_TICKS(50)) {
+        	PRINTF("Shock Detected!\r\n");
+
+			sprintf(buffer, "Shock Detected!\n");
+			sendMessage(buffer);
+            last_time = now;
         }
     }
 }
+
+void hallTask(void *pvParameters) {
+	char buffer[MAX_MSG_LEN];
+    while (1) {
+        xSemaphoreTake(hall_sema, portMAX_DELAY);
+
+        if (GPIOA->PDIR & (1 << HALL_PIN)) {
+        	PRINTF("Box Opened!\r\n");
+			sprintf(buffer, "Box Opened!\n");
+			sendMessage(buffer);
+        } else {
+        	PRINTF("Box Closed!\r\n");
+			sprintf(buffer, "Box Closed!\n");
+			sendMessage(buffer);
+        }
+    }
+}
+
 
 int main(void) {
     BOARD_InitBootPins();
@@ -321,9 +382,13 @@ int main(void) {
 
 
     queue = xQueueCreate(QLEN, sizeof(TMessage));
-    sema = xSemaphoreCreateBinary();
+    hall_sema = xSemaphoreCreateBinary();
+    shock_sema = xSemaphoreCreateBinary();
 
-    xTaskCreate(blinkLEDTask, "blink_led",
+    xTaskCreate(shockTask, "shockTask",
+        configMINIMAL_STACK_SIZE + 100, NULL, 1, NULL);
+
+    xTaskCreate(hallTask, "hallTask",
         configMINIMAL_STACK_SIZE + 100, NULL, 1, NULL);
 
     xTaskCreate(recvTask, "recvTask",
