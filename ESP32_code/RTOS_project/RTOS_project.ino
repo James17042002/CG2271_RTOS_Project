@@ -62,7 +62,7 @@ void TaskPhotoresistor(void *pvParameters) {
   }
 }
 
-void TaskReceiveFromKL25Z(void *pvParameters) {
+void TaskReceiveFromMCXC444(void *pvParameters) {
   char buffer[256];
   int idx = 0;
 
@@ -71,7 +71,7 @@ void TaskReceiveFromKL25Z(void *pvParameters) {
       char c = Serial1.read();
       if (c == '\n') {
         buffer[idx] = '\0';
-        Serial.printf("[KL25Z] %s\n", buffer);  // print to monitor
+        Serial.printf("[MCXC444] %s\n", buffer);  // print to monitor
         // Handle the message however you need
         idx = 0;
       } else if (idx < 255) {
