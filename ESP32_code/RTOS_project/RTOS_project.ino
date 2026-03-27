@@ -25,10 +25,9 @@ void setup() {
   if (uartMutex != NULL) {
     xTaskCreate(TaskTempHumid, "TempHumTask", 4096, NULL, 1, NULL);
     xTaskCreate(TaskPhotoresistor, "PhotoTask", 2048, NULL, 2, NULL);
+    xTaskCreate(TaskReceiveFromKL25Z, "RecvTask", 2048, NULL, 1, NULL);
   }
 }
-
-void loop() {}
 
 void TaskTempHumid(void *pvParameters) {
   for (;;) {
@@ -62,3 +61,25 @@ void TaskPhotoresistor(void *pvParameters) {
     vTaskDelay(pdMS_TO_TICKS(500));
   }
 }
+
+void TaskReceiveFromKL25Z(void *pvParameters) {
+  char buffer[256];
+  int idx = 0;
+
+  for (;;) {
+    if (Serial1.available()) {
+      char c = Serial1.read();
+      if (c == '\n') {
+        buffer[idx] = '\0';
+        Serial.printf("[KL25Z] %s\n", buffer);  // print to monitor
+        // Handle the message however you need
+        idx = 0;
+      } else if (idx < 255) {
+        buffer[idx++] = c;
+      }
+    }
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+}
+
+void loop() {}
