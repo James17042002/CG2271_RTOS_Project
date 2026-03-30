@@ -1,31 +1,63 @@
 #include <Arduino.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
 #include "DHT.h"
 
 // Hardware Configuration
 #define DHTPIN 3     
 #define DHTTYPE DHT11
 #define LDR_PIN 5
+
 const int NEW_TX_PIN = 1;
 const int NEW_RX_PIN = 2;
+
+const char* WIFI_SSID = "Ian";
+const char* WIFI_PASS = "ianchootz";
+float geoLat = 0, geoLng = 0;
 
 DHT dht(DHTPIN, DHTTYPE);
 
 // RTOS Handles
 SemaphoreHandle_t uartMutex;
 
-void setup() {
-  Serial.begin(115200); // Internal monitor
-  Serial1.begin(9600, SERIAL_8N1, NEW_RX_PIN, NEW_TX_PIN); // To MCXC444
+void getGeoLocation(float &lat, float &lng) {
+  HTTPClient http;
+  http.begin("http://ip-api.com/json/?fields=lat,lon");
+  int code = http.GET();
   
-  dht.begin();
-  
-  // Create Mutex to protect Serial1 resource
-  uartMutex = xSemaphoreCreateMutex();
+  if (code == 200) {
+    String response = http.getString();
+    // Simple parsing — find the values in the JSON
+    int latIdx = response.indexOf("\"lat\":") + 6;
+    int lonIdx = response.indexOf("\"lon\":") + 6;
+    lat = response.substring(latIdx).toFloat();
+    lng = response.substring(lonIdx).toFloat();
+    Serial.printf("[GEO] lat: %.4f, lng: %.4f\n", lat, lng);
+  }
+  http.end();
+}
 
+void setup() {
+  Serial.begin(115200);
+  Serial1.begin(9600, SERIAL_8N1, NEW_RX_PIN, NEW_TX_PIN);
+  dht.begin();
+
+  // Connect WiFi FIRST
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  Serial.print("Connecting to WiFi");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nWiFi connected, IP: " + WiFi.localIP().toString());
+
+  // THEN create tasks
+  uartMutex = xSemaphoreCreateMutex();
   if (uartMutex != NULL) {
     xTaskCreate(TaskTempHumid, "TempHumTask", 4096, NULL, 1, NULL);
     xTaskCreate(TaskPhotoresistor, "PhotoTask", 2048, NULL, 2, NULL);
-    xTaskCreate(TaskReceiveFromKL25Z, "RecvTask", 2048, NULL, 1, NULL);
+    xTaskCreate(TaskReceiveFromMCXC444, "RecvTask", 2048, NULL, 1, NULL);
+    xTaskCreate(TaskGeoLocation, "GeoTask", 8192, NULL, 1, NULL);
   }
 }
 
@@ -59,6 +91,16 @@ void TaskPhotoresistor(void *pvParameters) {
     }
 
     vTaskDelay(pdMS_TO_TICKS(500));
+    
+  }
+}
+
+void TaskGeoLocation(void *pvParameters) {
+  for (;;) {
+    if (WiFi.status() == WL_CONNECTED) {
+      getGeoLocation(geoLat, geoLng);
+    }
+    vTaskDelay(pdMS_TO_TICKS(300000)); // Every 5 minutes is plenty
   }
 }
 

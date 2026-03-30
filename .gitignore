@@ -31,3 +31,5 @@
 *.bin
 *.map
 .DS_Store
+.cproject
+.settings/language.settings.xml
