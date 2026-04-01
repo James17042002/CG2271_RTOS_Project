@@ -1,4 +1,4 @@
-#include <stdio.h>
+ #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "board.h"
@@ -6,6 +6,7 @@
 #include "pin_mux.h"
 #include "clock_config.h"
 #include "fsl_debug_console.h"
+#include "fsl_common.h"
 #include "FreeRTOS.h"
 #include "task.h"
 #include "queue.h"
@@ -20,7 +21,7 @@
 
 
 // Buzzer Pin
-#define BUZZER_PIN  0   // PTB0
+#define ACTIVE_BUZZER_PIN  0   // PTB0
 #define PASSIVE_BUZZER_PIN 12//PTA12
 
 typedef enum tl {
@@ -45,7 +46,7 @@ typedef struct tm {
     char message[MAX_MSG_LEN];
 } TMessage;
 
-void initPassiveBuzzer {
+void initPassiveBuzzer(void){
     // Enable clock gating for Port A
     SIM->SCGC5 |= SIM_SCGC5_PORTA_MASK;
 
@@ -60,35 +61,49 @@ void initPassiveBuzzer {
     GPIOA->PCOR |= (1 << PASSIVE_BUZZER_PIN);
 }
 
+void playTone(uint32_t frequency, uint32_t duration_ms) {
+    uint32_t half_period_us = 500000 / frequency;
+    uint32_t cycles = (frequency * duration_ms) / 1000;
+    uint32_t count = half_period_us * 6;  // tune this number
+
+    for (uint32_t i = 0; i < cycles; i++) {
+        GPIOB->PSOR = (1 << PASSIVE_BUZZER_PIN);
+        for (volatile uint32_t j = 0; j < count; j++) { __asm("nop"); }
+        GPIOB->PCOR = (1 << PASSIVE_BUZZER_PIN);
+        for (volatile uint32_t j = 0; j < count; j++) { __asm("nop"); }
+    }
+}
+
 void passiveBuzzerOn(void) {
-    GPIOA->PSOR |= (1 << PASSIVE_BUZZER_PIN);
+	//GPIOA->PSOR |= (1 << PASSIVE_BUZZER_PIN);
+	playTone(1000, 500);  // 1kHz for half a second
 }
 
 void passiveBuzzerOff(void) {
     GPIOA->PCOR |= (1 << PASSIVE_BUZZER_PIN);
 }
 
-void initBuzzer() {
+void initActiveBuzzer() {
     // Enable clock gating for Port B
     SIM->SCGC5 |= SIM_SCGC5_PORTB_MASK;
 
     // Set PTB0 to GPIO
-    PORTB->PCR[BUZZER_PIN] &= ~PORT_PCR_MUX_MASK;
-    PORTB->PCR[BUZZER_PIN] |= PORT_PCR_MUX(1);
+    PORTB->PCR[ACTIVE_BUZZER_PIN] &= ~PORT_PCR_MUX_MASK;
+    PORTB->PCR[ACTIVE_BUZZER_PIN] |= PORT_PCR_MUX(1);
 
     // Set as output
-    GPIOB->PDDR |= (1 << BUZZER_PIN);
+    GPIOB->PDDR |= (1 << ACTIVE_BUZZER_PIN);
 
     // Start with buzzer off
-    GPIOB->PCOR |= (1 << BUZZER_PIN);
+    GPIOB->PCOR |= (1 << ACTIVE_BUZZER_PIN);
 }
 
-void buzzerOn() {
-    GPIOB->PSOR |= (1 << BUZZER_PIN);
+void activeBuzzerOn() {
+    GPIOB->PSOR |= (1 << ACTIVE_BUZZER_PIN);
 }
 
-void buzzerOff() {
-    GPIOB->PCOR |= (1 << BUZZER_PIN);
+void activeBuzzerOff() {
+    GPIOB->PCOR |= (1 << ACTIVE_BUZZER_PIN);
 }
 
 void initLEDs() {
@@ -309,10 +324,14 @@ static void recvTask(void *p) {
 
 				// To flip logic in actual project, currently high light reading is actually darkness
                 if(light > 500) {
-                    buzzerOn();
+                    //activeBuzzerOn();
+                    onLED(RED);
+                    passiveBuzzerOn();
                     PRINTF("Alert: Buzzer ON, Red LED ON\r\n");
                 } else {
-                    buzzerOff();
+                    //activeBuzzerOff();
+                    offLED(RED);
+                    passiveBuzzerOff();
                     PRINTF("Normal: Buzzer OFF, Red LED OFF\r\n");
                 }
             }
@@ -398,8 +417,10 @@ int main(void) {
     offLED(GREEN);
     offLED(BLUE);
 
-    initBuzzer();
-    buzzerOff();
+    initActiveBuzzer();
+    activeBuzzerOff();
+    initPassiveBuzzer();
+    passiveBuzzerOff();
     initIRQ();
     initUART2(9600);
     PRINTF("RTOS Project\r\n");
