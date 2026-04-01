@@ -63,21 +63,6 @@ SemaphoreHandle_t uartMutex;
 void getGeoLocation(float &lat, float &lng);
 void processData(AsyncResult &aResult);
 
-void setup() {
-  Serial.begin(115200); // Internal monitor
-  Serial1.begin(9600, SERIAL_8N1, NEW_RX_PIN, NEW_TX_PIN); // To MCXC444
-  
-  if (code == 200) {
-    String response = http.getString();
-    // Simple parsing — find the values in the JSON
-    int latIdx = response.indexOf("\"lat\":") + 6;
-    int lonIdx = response.indexOf("\"lon\":") + 6;
-    lat = response.substring(latIdx).toFloat();
-    lng = response.substring(lonIdx).toFloat();
-    Serial.printf("[GEO] lat: %.4f, lng: %.4f\n", lat, lng);
-  }
-  http.end();
-}
 
 void setup() {
   Serial.begin(115200);
