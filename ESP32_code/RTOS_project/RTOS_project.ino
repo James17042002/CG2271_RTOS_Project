@@ -67,6 +67,21 @@ void setup() {
   Serial.begin(115200); // Internal monitor
   Serial1.begin(9600, SERIAL_8N1, NEW_RX_PIN, NEW_TX_PIN); // To MCXC444
   
+  if (code == 200) {
+    String response = http.getString();
+    // Simple parsing — find the values in the JSON
+    int latIdx = response.indexOf("\"lat\":") + 6;
+    int lonIdx = response.indexOf("\"lon\":") + 6;
+    lat = response.substring(latIdx).toFloat();
+    lng = response.substring(lonIdx).toFloat();
+    Serial.printf("[GEO] lat: %.4f, lng: %.4f\n", lat, lng);
+  }
+  http.end();
+}
+
+void setup() {
+  Serial.begin(115200);
+  Serial1.begin(9600, SERIAL_8N1, NEW_RX_PIN, NEW_TX_PIN);
   dht.begin();
   
   // Connect WiFi FIRST
@@ -89,6 +104,17 @@ void setup() {
   dataMutex = xSemaphoreCreateMutex();
   uartMutex = xSemaphoreCreateMutex();
 
+  // Connect WiFi FIRST
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  Serial.print("Connecting to WiFi");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nWiFi connected, IP: " + WiFi.localIP().toString());
+
+  // THEN create tasks
+  uartMutex = xSemaphoreCreateMutex();
   if (uartMutex != NULL) {
     xTaskCreate(TaskTempHumid, "TempHumTask", 4096, NULL, 1, NULL);
     xTaskCreate(TaskPhotoresistor, "PhotoTask", 2048, NULL, 2, NULL);
@@ -143,6 +169,16 @@ void TaskPhotoresistor(void *pvParameters) {
     }
 
     vTaskDelay(pdMS_TO_TICKS(500));
+    
+  }
+}
+
+void TaskGeoLocation(void *pvParameters) {
+  for (;;) {
+    if (WiFi.status() == WL_CONNECTED) {
+      getGeoLocation(geoLat, geoLng);
+    }
+    vTaskDelay(pdMS_TO_TICKS(300000)); // Every 5 minutes is plenty
   }
 }
 
