@@ -284,7 +284,7 @@ static void recvTask(void *p) {
 				PRINTF("Parsed Light: %d\r\n", light);
 
 				// To flip logic in actual project, currently high light reading is actually darkness
-                if(light > 500) {
+                if(light > 600) {
                     buzzerOn();
                     PRINTF("Alert: Buzzer ON, Red LED ON\r\n");
                 } else {
