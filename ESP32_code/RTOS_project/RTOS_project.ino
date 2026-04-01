@@ -163,15 +163,6 @@ void TaskGeoLocation(void *pvParameters) {
     if (WiFi.status() == WL_CONNECTED) {
       getGeoLocation(geoLat, geoLng);
     }
-    vTaskDelay(pdMS_TO_TICKS(300000)); // Every 5 minutes is plenty
-  }
-}
-
-void TaskGeoLocation(void *pvParameters) {
-  for (;;) {
-    if (WiFi.status() == WL_CONNECTED) {
-      getGeoLocation(geoLat, geoLng);
-    }
     if (xSemaphoreTake(dataMutex, portMAX_DELAY)) {
       currentShipment.lat = geoLat;
       currentShipment.lng = geoLng;
