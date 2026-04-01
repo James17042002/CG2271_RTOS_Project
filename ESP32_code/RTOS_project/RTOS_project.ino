@@ -4,7 +4,9 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
+#include <HTTPClient.h>      // Added for GeoLocation
 #include <FirebaseClient.h>
+#include <FirebaseJson.h>
 #include <ArduinoJson.h>
 #include "DHT.h"
 
@@ -25,9 +27,13 @@
 
 
 // Firebase Objects
+typedef WiFiClientSecure SSL_CLIENT;
+
 SSL_CLIENT ssl_client, stream_ssl_client;
 FirebaseApp app;
+
 using AsyncClient = AsyncClientClass;
+
 AsyncClient aClient(ssl_client); 
 RealtimeDatabase Database;
 UserAuth user_auth(Web_API_KEY, USER_EMAIL, USER_PASS);
@@ -190,13 +196,18 @@ void TaskFirebaseUpdate(void *pvParameters) {
         json.add("latitude", currentShipment.lat);
         json.add("longitude", currentShipment.lng);
         json.add("event_status", currentShipment.status);
-        json.add("ts", millis()); // Uptime timestamp
+        json.set("ts/.sv", "timestamp");
         xSemaphoreGive(dataMutex);
       }
 
+      // Serialize FirebaseJson to string, then wrap in object_t
+      String jsonStr;
+      json.toString(jsonStr);
+      object_t payload(jsonStr);
+
       Serial.println("[CLOUD] Pushing Log...");
       // Using .push() ensures every event is saved as a new entry in a list
-      Database.push(aClient, "/shipment_logs", json, processData);
+      Database.push(aClient, "/shipment_logs", payload, processData);
     }
     vTaskDelay(pdMS_TO_TICKS(15000)); // Upload every 15 seconds
   }
