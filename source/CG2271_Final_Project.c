@@ -21,7 +21,6 @@
 
 // Buzzer Pin
 #define BUZZER_PIN  0   // PTB0
-#define PASSIVE_BUZZER_PIN 12//PTA12
 
 typedef enum tl {
     RED, GREEN, BLUE
@@ -44,29 +43,6 @@ QueueHandle_t queue;
 typedef struct tm {
     char message[MAX_MSG_LEN];
 } TMessage;
-
-void initPassiveBuzzer {
-    // Enable clock gating for Port A
-    SIM->SCGC5 |= SIM_SCGC5_PORTA_MASK;
-
-    // Set PTA12 to GPIO
-    PORTA->PCR[PASSIVE_BUZZER_PIN] &= ~PORT_PCR_MUX_MASK;
-    PORTA->PCR[PASSIVE_BUZZER_PIN] |= PORT_PCR_MUX(1);
-
-    // Set as output
-    GPIOA->PDDR |= (1 << PASSIVE_BUZZER_PIN);
-
-    // Start with buzzer off
-    GPIOA->PCOR |= (1 << PASSIVE_BUZZER_PIN);
-}
-
-void passiveBuzzerOn(void) {
-    GPIOA->PSOR |= (1 << PASSIVE_BUZZER_PIN);
-}
-
-void passiveBuzzerOff(void) {
-    GPIOA->PCOR |= (1 << PASSIVE_BUZZER_PIN);
-}
 
 void initBuzzer() {
     // Enable clock gating for Port B
