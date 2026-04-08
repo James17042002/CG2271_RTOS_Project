@@ -4,11 +4,12 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
-#include <HTTPClient.h>      // Added for GeoLocation
+#include <HTTPClient.h>
 #include <FirebaseClient.h>
 #include <FirebaseJson.h>
 #include <ArduinoJson.h>
 #include "DHT.h"
+#include "event_groups.h"
 
 // Hardware Configuration
 #define DHTPIN 3     
@@ -20,10 +21,10 @@
 #define WIFI_PASS "sickening123"
 
 // Firebase Project Configuration
-#define Web_API_KEY "AIzaSyCODz9_kjBFIPd3h9uDQAtDx_IEcKxqpjQ" // API Key
-#define DATABASE_URL "https://cg2271-rtos-default-rtdb.asia-southeast1.firebasedatabase.app" // URL
-#define USER_EMAIL "irwanahmed001@gmail.com" // User Email
-#define USER_PASS "cg2271" // User Password
+#define Web_API_KEY "AIzaSyCODz9_kjBFIPd3h9uDQAtDx_IEcKxqpjQ"
+#define DATABASE_URL "https://cg2271-rtos-default-rtdb.asia-southeast1.firebasedatabase.app"
+#define USER_EMAIL "irwanahmed001@gmail.com"
+#define USER_PASS "cg2271"
 
 // Firebase Objects
 typedef WiFiClientSecure SSL_CLIENT;
@@ -52,7 +53,11 @@ struct ShipmentData {
 
 float geoLat = 0, geoLng = 0;
 
-bool isActiveRun = false; // Local flag to control data upload
+bool isActiveRun = false;
+
+// WiFi Event Group
+EventGroupHandle_t wifiEventGroup;
+#define WIFI_CONNECTED_BIT BIT0
 
 DHT dht(DHTPIN, DHTTYPE);
 
@@ -60,7 +65,7 @@ DHT dht(DHTPIN, DHTTYPE);
 SemaphoreHandle_t dataMutex;
 SemaphoreHandle_t uartMutex;
 
-//Helper Function Prototype Declarations (Helper Functions at the bottom)
+// Helper Function Prototype Declarations
 void getGeoLocation(float &lat, float &lng);
 void processData(AsyncResult &aResult);
 
@@ -69,27 +74,7 @@ void setup() {
   Serial1.begin(9600, SERIAL_8N1, NEW_RX_PIN, NEW_TX_PIN);
   dht.begin();
   
-  // Connect WiFi FIRST
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-  Serial.print("Connecting to WiFi");
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.println(".");
-  }
-  Serial.println("\nWiFi connected, IP: " + WiFi.localIP().toString());
-
-  // Initialize Firebase
-  ssl_client.setInsecure(); // Required for ESP32 to skip certificate chain validation
-  initializeApp(aClient, app, getAuth(user_auth), processData);
-  app.getApp<RealtimeDatabase>(Database);
-  Database.url(DATABASE_URL);
-
-  
-  //RTOS Setup
-  dataMutex = xSemaphoreCreateMutex();
-  uartMutex = xSemaphoreCreateMutex();
-
-  // Connect WiFi FIRST
+  // Connect WiFi
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   Serial.print("Connecting to WiFi");
   while (WiFi.status() != WL_CONNECTED) {
@@ -98,9 +83,20 @@ void setup() {
   }
   Serial.println("\nWiFi connected, IP: " + WiFi.localIP().toString());
 
-  // THEN create tasks
+  // Initialize Firebase
+  ssl_client.setInsecure();
+  initializeApp(aClient, app, getAuth(user_auth), processData);
+  app.getApp<RealtimeDatabase>(Database);
+  Database.url(DATABASE_URL);
+
+  // RTOS Setup
+  dataMutex = xSemaphoreCreateMutex();
   uartMutex = xSemaphoreCreateMutex();
-  if (uartMutex != NULL) {
+  wifiEventGroup = xEventGroupCreate();
+  xEventGroupSetBits(wifiEventGroup, WIFI_CONNECTED_BIT); // WiFi already connected
+
+  if (uartMutex != NULL && dataMutex != NULL && wifiEventGroup != NULL) {
+    xTaskCreate(TaskWiFiManager, "WiFiTask", 4096, NULL, 3, NULL);
     xTaskCreate(TaskTempHumid, "TempHumTask", 4096, NULL, 1, NULL);
     xTaskCreate(TaskPhotoresistor, "PhotoTask", 2048, NULL, 2, NULL);
     xTaskCreate(TaskReceiveFromMCXC444, "RecvTask", 2048, NULL, 1, NULL);
@@ -110,12 +106,36 @@ void setup() {
   }
 }
 
+void TaskWiFiManager(void *pvParameters) {
+  for (;;) {
+    if (WiFi.status() != WL_CONNECTED) {
+      xEventGroupClearBits(wifiEventGroup, WIFI_CONNECTED_BIT);
+      Serial.println("[WIFI] Disconnected. Reconnecting...");
+      WiFi.disconnect();
+      WiFi.begin(WIFI_SSID, WIFI_PASS);
+      int retries = 0;
+      while (WiFi.status() != WL_CONNECTED && retries < 20) {
+        vTaskDelay(pdMS_TO_TICKS(500));
+        retries++;
+      }
+      if (WiFi.status() == WL_CONNECTED) {
+        xEventGroupSetBits(wifiEventGroup, WIFI_CONNECTED_BIT);
+        Serial.printf("[WIFI] Reconnected! IP: %s\n", WiFi.localIP().toString().c_str());
+      } else {
+        Serial.println("[WIFI] Failed. Retrying in 5s...");
+      }
+    } else {
+      xEventGroupSetBits(wifiEventGroup, WIFI_CONNECTED_BIT);
+    }
+    vTaskDelay(pdMS_TO_TICKS(5000));
+  }
+}
+
 void TaskTempHumid(void *pvParameters) {
   for (;;) {
     float h = dht.readHumidity();
     float t = dht.readTemperature();
 
-    //Add temp and hum readings to Shipment Data
     if (xSemaphoreTake(dataMutex, portMAX_DELAY)) {
       if (!isnan(h) && !isnan(t)) {
         currentShipment.temp = t;
@@ -124,13 +144,12 @@ void TaskTempHumid(void *pvParameters) {
       xSemaphoreGive(dataMutex);
     }
 
-    // Also send to MCXC444 as per original requirement
     if (xSemaphoreTake(uartMutex, portMAX_DELAY)) {
       if (!isnan(h) && !isnan(t)) {
         Serial1.printf("TEMP:%.2f,HUMI:%.2f\n", t, h);
         Serial.printf("[ENV] UART Sent: T:%.2f H:%.2f\n", t, h);
       }
-      xSemaphoreGive(uartMutex); // Release resource
+      xSemaphoreGive(uartMutex);
     }
 
     vTaskDelay(pdMS_TO_TICKS(2000)); 
@@ -141,35 +160,34 @@ void TaskPhotoresistor(void *pvParameters) {
   for (;;) {
     int lightValue = analogRead(LDR_PIN);
 
-    //Add light value readings to Shipment data
     if (xSemaphoreTake(dataMutex, portMAX_DELAY)) {
       currentShipment.light = lightValue;
       xSemaphoreGive(dataMutex);
     }
 
-    // Lock UART resource before printing
     if (xSemaphoreTake(uartMutex, portMAX_DELAY)) {
       Serial1.printf("LIGHT:%d\n", lightValue);
       Serial.printf("[SEC] UART Sent: L:%d\n", lightValue);
-      xSemaphoreGive(uartMutex); // Release resource
+      xSemaphoreGive(uartMutex);
     }
 
     vTaskDelay(pdMS_TO_TICKS(500));
-    
   }
 }
 
 void TaskGeoLocation(void *pvParameters) {
   for (;;) {
-    if (WiFi.status() == WL_CONNECTED) {
-      getGeoLocation(geoLat, geoLng);
-    }
+    // Block until WiFi is connected — zero CPU cost while waiting
+    xEventGroupWaitBits(wifiEventGroup, WIFI_CONNECTED_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
+
+    getGeoLocation(geoLat, geoLng);
+
     if (xSemaphoreTake(dataMutex, portMAX_DELAY)) {
       currentShipment.lat = geoLat;
       currentShipment.lng = geoLng;
       xSemaphoreGive(dataMutex);
     }
-    vTaskDelay(pdMS_TO_TICKS(300000)); // Every 5 minutes is plenty
+    vTaskDelay(pdMS_TO_TICKS(300000));
   }
 }
 
@@ -182,12 +200,11 @@ void TaskReceiveFromMCXC444(void *pvParameters) {
       char c = Serial1.read();
       if (c == '\n') {
         buffer[idx] = '\0';
-        Serial.printf("[MCXC444] %s\n", buffer);  // print to monitor
+        Serial.printf("[MCXC444] %s\n", buffer);
         if (xSemaphoreTake(dataMutex, portMAX_DELAY)) {
           strncpy(currentShipment.status, buffer, 63);
           xSemaphoreGive(dataMutex);
         }
-        // Handle the message however you need
         idx = 0;
       } else if (idx < 255) {
         buffer[idx++] = c;
@@ -199,7 +216,9 @@ void TaskReceiveFromMCXC444(void *pvParameters) {
 
 void TaskFirebaseUpdate(void *pvParameters) {
   for (;;) {
-    // Only proceed if the app is ready AND Active_Run is true
+    // Block until WiFi is connected — zero CPU cost while waiting
+    xEventGroupWaitBits(wifiEventGroup, WIFI_CONNECTED_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
+
     if (app.ready() && isActiveRun) {
       FirebaseJson json;
       
@@ -230,22 +249,21 @@ void TaskFirebaseUpdate(void *pvParameters) {
 
 void TaskMonitorActiveRun(void *pvParameters) {
   for (;;) {
+    // Block until WiFi is connected — zero CPU cost while waiting
+    xEventGroupWaitBits(wifiEventGroup, WIFI_CONNECTED_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
+
     if (app.ready()) {
-      // This sends a request to Firebase. 
-      // The answer will be handled in the processData callback.
       Database.get(aClient, "/Active_Run", processData);
     }
-    // Check every 10 seconds to avoid spamming the database
     vTaskDelay(pdMS_TO_TICKS(10000)); 
   }
 }
 
 void loop() {
-  // Required to maintain Firebase Auth and Async tasks
   app.loop();
 }
 
-//Helper Functions
+// Helper Functions
 void getGeoLocation(float &lat, float &lng) {
   HTTPClient http;
   http.begin("http://ip-api.com/json/?fields=lat,lon");
@@ -253,7 +271,6 @@ void getGeoLocation(float &lat, float &lng) {
 
   if (code == 200) {
     String response = http.getString();
-    // Simple parsing — find the values in the JSON
     int latIdx = response.indexOf("\"lat\":") + 6;
     int lonIdx = response.indexOf("\"lon\":") + 6;
     lat = response.substring(latIdx).toFloat();
@@ -267,9 +284,7 @@ void processData(AsyncResult &aResult) {
   if (aResult.isError()) {
     Serial.printf("Firebase Error: %s\n", aResult.error().message().c_str());
   } else if (aResult.available()) {
-    // Check if the data coming back is from our Active_Run path
     if (aResult.path() == "/Active_Run") {
-      // FIX: Access the RTDB result object first, then convert to bool
       isActiveRun = aResult.to<RealtimeDatabaseResult>().to<bool>();
       Serial.printf("[SYSTEM] Active_Run is now: %s\n", isActiveRun ? "TRUE" : "FALSE");
     } else {
