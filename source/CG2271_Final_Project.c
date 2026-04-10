@@ -7,6 +7,7 @@
 #include "pin_mux.h"
 #include "queue.h"
 #include "semphr.h"
+#include "slcd_display.h"
 #include "task.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,11 +22,15 @@
 #define HALL_PIN 4  // PTA4
 #define SHOCK_PIN 5 // PTA5
 
-// Buzzer Pins
-#define ACTIVE_BUZZER_PIN 0   // PTB0
-#define PASSIVE_BUZZER_PIN 12 // PTA12
+// Buzzer Pin
+#define ACTIVE_BUZZER_PIN 0 // PTB0
 
 typedef enum tl { RED, GREEN, BLUE } TLED;
+
+// System state for LCD display
+typedef enum { STATE_SAFE, STATE_BOX_OPEN, STATE_SHOCK } SystemState;
+
+volatile SystemState g_state = STATE_SAFE;
 
 // Comms
 #define BAUD_RATE 9600
@@ -44,57 +49,13 @@ typedef struct tm {
   char message[MAX_MSG_LEN];
 } TMessage;
 
-void initPassiveBuzzer(void) {
-  // Enable clock gating for Port A
-  SIM->SCGC5 |= SIM_SCGC5_PORTA_MASK;
-
-  // Set PTA12 to GPIO
-  PORTA->PCR[PASSIVE_BUZZER_PIN] &= ~PORT_PCR_MUX_MASK;
-  PORTA->PCR[PASSIVE_BUZZER_PIN] |= PORT_PCR_MUX(1);
-
-  // Set as output
-  GPIOA->PDDR |= (1 << PASSIVE_BUZZER_PIN);
-
-  // Start with buzzer off
-  GPIOA->PCOR |= (1 << PASSIVE_BUZZER_PIN);
-}
-
-void playTone(uint32_t frequency, uint32_t duration_ms) {
-  uint32_t half_period_us = 500000 / frequency;
-  uint32_t cycles = (frequency * duration_ms) / 1000;
-  uint32_t count = half_period_us * 6; // tune this number
-
-  for (uint32_t i = 0; i < cycles; i++) {
-    GPIOB->PSOR = (1 << PASSIVE_BUZZER_PIN);
-    for (volatile uint32_t j = 0; j < count; j++) {
-      __asm("nop");
-    }
-    GPIOB->PCOR = (1 << PASSIVE_BUZZER_PIN);
-    for (volatile uint32_t j = 0; j < count; j++) {
-      __asm("nop");
-    }
-  }
-}
-
-void passiveBuzzerOn(void) {
-  // GPIOA->PSOR |= (1 << PASSIVE_BUZZER_PIN);
-  playTone(1000, 500); // 1kHz for half a second
-}
-
-void passiveBuzzerOff(void) { GPIOA->PCOR |= (1 << PASSIVE_BUZZER_PIN); }
-
 void initActiveBuzzer() {
-  // Enable clock gating for Port B
   SIM->SCGC5 |= SIM_SCGC5_PORTB_MASK;
 
-  // Set PTB0 to GPIO
   PORTB->PCR[ACTIVE_BUZZER_PIN] &= ~PORT_PCR_MUX_MASK;
   PORTB->PCR[ACTIVE_BUZZER_PIN] |= PORT_PCR_MUX(1);
 
-  // Set as output
   GPIOB->PDDR |= (1 << ACTIVE_BUZZER_PIN);
-
-  // Start with buzzer off
   GPIOB->PCOR |= (1 << ACTIVE_BUZZER_PIN);
 }
 
@@ -184,9 +145,9 @@ void initUART2(uint32_t baud_rate) {
   UART2->C1 &= ~UART_C1_PE_MASK;
   UART2->C1 &= ~UART_C1_M_MASK;
 
-  UART2->C2 |= UART_C2_RIE_MASK; // Enable Rx interrupt
-  UART2->C2 |= UART_C2_RE_MASK;  // Enable Receiver
-  UART2->C2 |= UART_C2_TE_MASK;  // FIX: Enable Transmitter permanently
+  UART2->C2 |= UART_C2_RIE_MASK;
+  UART2->C2 |= UART_C2_RE_MASK;
+  UART2->C2 |= UART_C2_TE_MASK;
 
   NVIC_SetPriority(UART2_FLEXIO_IRQn, UART2_INT_PRIO);
   NVIC_ClearPendingIRQ(UART2_FLEXIO_IRQn);
@@ -200,33 +161,22 @@ void initIRQ() {
   // -------- SHOCK PIN --------
   PORTA->PCR[SHOCK_PIN] &= ~PORT_PCR_MUX_MASK;
   PORTA->PCR[SHOCK_PIN] |= PORT_PCR_MUX(1);
-
   GPIOA->PDDR &= ~(1 << SHOCK_PIN);
-
-  // Shock sensor sends a low during shock, set pull-up resistors
   PORTA->PCR[SHOCK_PIN] &= ~PORT_PCR_PS_MASK;
   PORTA->PCR[SHOCK_PIN] |= PORT_PCR_PS(1);
-
   PORTA->PCR[SHOCK_PIN] &= ~PORT_PCR_PE_MASK;
   PORTA->PCR[SHOCK_PIN] |= PORT_PCR_PE(1);
-
   PORTA->PCR[SHOCK_PIN] &= ~PORT_PCR_IRQC_MASK;
-  PORTA->PCR[SHOCK_PIN] |= PORT_PCR_IRQC(0b1001); // falling edge
+  PORTA->PCR[SHOCK_PIN] |= PORT_PCR_IRQC(0b1001);
 
   // -------- HALL PIN --------
   PORTA->PCR[HALL_PIN] &= ~PORT_PCR_MUX_MASK;
   PORTA->PCR[HALL_PIN] |= PORT_PCR_MUX(1);
-
   GPIOA->PDDR &= ~(1 << HALL_PIN);
-
-  // disable pull-up/down resistors,
-  // Stable HIGH when no magnet
-  // LOW when magnet present
   PORTA->PCR[HALL_PIN] &= ~PORT_PCR_PE_MASK;
   PORTA->PCR[HALL_PIN] |= PORT_PCR_PE(0);
-
   PORTA->PCR[HALL_PIN] &= ~PORT_PCR_IRQC_MASK;
-  PORTA->PCR[HALL_PIN] |= PORT_PCR_IRQC(0b1011); // triggers on either edge
+  PORTA->PCR[HALL_PIN] |= PORT_PCR_IRQC(0b1011);
 
   NVIC_SetPriority(PORTA_IRQn, 0);
   NVIC_ClearPendingIRQ(PORTA_IRQn);
@@ -239,7 +189,6 @@ SemaphoreHandle_t hall_sema;
 
 void PORTA_IRQHandler() {
   BaseType_t hpw = pdFALSE;
-
   uint32_t flags = PORTA->ISFR;
 
   if (flags & (1 << SHOCK_PIN)) {
@@ -260,17 +209,10 @@ void UART2_FLEXIO_IRQHandler(void) {
   char rx_data;
   static char recv_buffer[MAX_MSG_LEN];
 
-  // FIX: Ensure TDRE is set AND the Transmit Interrupt is currently enabled
-  if ((UART2->S1 & UART_S1_TDRE_MASK) && (UART2->C2 & UART_C2_TIE_MASK))
-  {
+  if ((UART2->S1 & UART_S1_TDRE_MASK) && (UART2->C2 & UART_C2_TIE_MASK)) {
     if (send_buffer[send_ptr] == '\0') {
       send_ptr = 0;
-
-      // Disable the transmit interrupt so it stops firing
       UART2->C2 &= ~UART_C2_TIE_MASK;
-
-      // FIX: Do NOT disable TE here. Let the hardware finish shifting out the final \n
-      // UART2->C2 &= ~UART_C2_TE_MASK;
     } else {
       UART2->D = send_buffer[send_ptr++];
     }
@@ -281,8 +223,7 @@ void UART2_FLEXIO_IRQHandler(void) {
     rx_data = UART2->D;
     recv_buffer[recv_ptr++] = rx_data;
     if (rx_data == '\n') {
-      // Copy over the string
-      BaseType_t hpw; // higher prio waiting
+      BaseType_t hpw;
       recv_buffer[recv_ptr] = '\0';
       strncpy(msg.message, recv_buffer, MAX_MSG_LEN);
       xQueueSendFromISR(queue, (void *)&msg, &hpw);
@@ -294,9 +235,33 @@ void UART2_FLEXIO_IRQHandler(void) {
 
 void sendMessage(char *message) {
   strncpy(send_buffer, message, MAX_MSG_LEN);
-
-  // Enable the transmit interrupt, which will immediately trigger the ISR
   UART2->C2 |= UART_C2_TIE_MASK;
+}
+
+// LCD update task — polls g_state and refreshes the 4-digit SLCD
+//   STATE_SAFE     -> "SAFE"
+//   STATE_BOX_OPEN -> "OPEn"
+//   STATE_SHOCK    -> "ShOC"
+static void lcdTask(void *p) {
+  SystemState prev = (SystemState)-1;
+  while (1) {
+    SystemState cur = g_state;
+    if (cur != prev) {
+      switch (cur) {
+      case STATE_SAFE:
+        SLCD_ShowString("SAFE");
+        break;
+      case STATE_BOX_OPEN:
+        SLCD_ShowString("OPEn");
+        break;
+      case STATE_SHOCK:
+        SLCD_ShowString("ShOC");
+        break;
+      }
+      prev = cur;
+    }
+    vTaskDelay(pdMS_TO_TICKS(100));
+  }
 }
 
 static void recvTask(void *p) {
@@ -307,30 +272,21 @@ static void recvTask(void *p) {
     TMessage msg;
     if (xQueueReceive(queue, (TMessage *)&msg, portMAX_DELAY) == pdTRUE) {
 
-      // 1. Parse Light Intensity Data
       if (sscanf(msg.message, "LIGHT:%d", &light) == 1) {
         PRINTF("Parsed Light: %d\r\n", light);
 
-        // To flip logic in actual project, currently high light reading is
-        // actually darkness
         if (light > 600) {
           activeBuzzerOn();
           onLED(RED);
-//          passiveBuzzerOn();
           PRINTF("Alert: Buzzer ON, Red LED ON\r\n");
         } else {
           activeBuzzerOff();
           offLED(RED);
-//          passiveBuzzerOff();
           PRINTF("Normal: Buzzer OFF, Red LED OFF\r\n");
         }
       }
 
-      // 2. Parse Temperature and Humidity Data
       else if (sscanf(msg.message, "TEMP:%f,HUMI:%f", &temp, &humi) == 2) {
-
-        // manually print floats, printf does not support floating point in
-        // embedded toolchains
         PRINTF("Parsed Temp: %d.%02d, Humi: %d.%02d\r\n", (int)temp,
                (int)(temp * 100) % 100, (int)humi, (int)(humi * 100) % 100);
 
@@ -350,7 +306,6 @@ static void recvTask(void *p) {
           PRINTF("Normal: Green LED OFF\r\n");
         }
       } else {
-        // Catch unformatted strings
         PRINTF("Unknown Message format: %s\r\n", msg.message);
       }
     }
@@ -370,6 +325,9 @@ void shockTask(void *p) {
 
       sprintf(buffer, "Shock Detected!\n");
       sendMessage(buffer);
+
+      g_state = STATE_SHOCK;
+
       last_time = now;
     }
   }
@@ -384,10 +342,15 @@ void hallTask(void *pvParameters) {
       PRINTF("Box Opened!\r\n");
       sprintf(buffer, "Box Opened!\n");
       sendMessage(buffer);
+
+      g_state = STATE_BOX_OPEN;
+
     } else {
       PRINTF("Box Closed!\r\n");
       sprintf(buffer, "Box Closed!\n");
       sendMessage(buffer);
+
+      g_state = STATE_SAFE;
     }
   }
 }
@@ -407,10 +370,13 @@ int main(void) {
 
   initActiveBuzzer();
   activeBuzzerOff();
-  initPassiveBuzzer();
-  passiveBuzzerOff();
   initIRQ();
   initUART2(9600);
+
+  // Initialise on-board segment LCD and show startup state
+  SLCD_DisplayInit();
+  SLCD_ShowString("SAFE");
+
   PRINTF("RTOS Project\r\n");
 
   queue = xQueueCreate(QLEN, sizeof(TMessage));
@@ -424,6 +390,9 @@ int main(void) {
               NULL);
 
   xTaskCreate(recvTask, "recvTask", configMINIMAL_STACK_SIZE + 100, NULL, 2,
+              NULL);
+
+  xTaskCreate(lcdTask, "lcdTask", configMINIMAL_STACK_SIZE + 100, NULL, 1,
               NULL);
 
   vTaskStartScheduler();
