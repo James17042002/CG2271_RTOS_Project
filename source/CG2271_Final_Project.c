@@ -25,12 +25,17 @@
 // Buzzer Pin
 #define ACTIVE_BUZZER_PIN 0 // PTB0
 
+// Switch Pin
+#define SW2_PIN 3 // PTC3
+
 typedef enum tl { RED, GREEN, BLUE } TLED;
 
 // System state for LCD display
 typedef enum { STATE_SAFE, STATE_BOX_OPEN, STATE_SHOCK } SystemState;
 
 volatile SystemState g_state = STATE_SAFE;
+volatile bool g_is_compromised = false;
+volatile bool g_is_shocked = false;
 
 // Comms
 #define BAUD_RATE 9600
@@ -75,6 +80,18 @@ void initLEDs() {
 
   GPIOE->PDDR |= ((1 << RED_PIN) | (1 << BLUE_PIN));
   GPIOD->PDDR |= (1 << GREEN_PIN);
+
+  // Default state: Red OFF, Green OFF (indicatorTask will take over)
+  GPIOE->PSOR |= (1 << RED_PIN);
+  GPIOD->PSOR |= (1 << GREEN_PIN);
+}
+
+void initButtons() {
+  SIM->SCGC5 |= SIM_SCGC5_PORTC_MASK;
+  PORTC->PCR[SW2_PIN] &= ~PORT_PCR_MUX_MASK;
+  PORTC->PCR[SW2_PIN] |= PORT_PCR_MUX(1);
+  GPIOC->PDDR &= ~(1 << SW2_PIN);
+  PORTC->PCR[SW2_PIN] |= PORT_PCR_PE_MASK | PORT_PCR_PS_MASK; // Pull-up
 }
 
 void onLED(TLED led) {
@@ -264,6 +281,32 @@ static void lcdTask(void *p) {
   }
 }
 
+static void indicatorTask(void *p) {
+  while (1) {
+    if (g_is_shocked) {
+      // Rapid blink the active color (Red if tampered, Green if safe)
+      TLED active_led = g_is_compromised ? RED : GREEN;
+      TLED other_led = g_is_compromised ? GREEN : RED;
+
+      offLED(other_led);
+      offLED(BLUE);
+      toggleLED(active_led);
+      vTaskDelay(pdMS_TO_TICKS(100));
+    } else {
+      // Solid active color
+      if (g_is_compromised) {
+        onLED(RED);
+        offLED(GREEN);
+      } else {
+        onLED(GREEN);
+        offLED(RED);
+      }
+      offLED(BLUE);
+      vTaskDelay(pdMS_TO_TICKS(200));
+    }
+  }
+}
+
 static void recvTask(void *p) {
   float temp, humi;
   int light;
@@ -273,38 +316,22 @@ static void recvTask(void *p) {
     if (xQueueReceive(queue, (TMessage *)&msg, portMAX_DELAY) == pdTRUE) {
 
       if (sscanf(msg.message, "LIGHT:%d", &light) == 1) {
-        PRINTF("Parsed Light: %d\r\n", light);
+        PRINTF("Parsed Light: %u\r\n", light);
 
-        if (light > 600) {
+        // Light sensor measures darkness: Low value = Bright (Compromised)
+        if (light < 400) {
+          g_is_compromised = true;
+          g_state = STATE_BOX_OPEN;
+          PRINTF("Alert: Light Tamper Detected! Buzzer ON (2s)\r\n");
           activeBuzzerOn();
-          onLED(RED);
-          PRINTF("Alert: Buzzer ON, Red LED ON\r\n");
-        } else {
+          vTaskDelay(pdMS_TO_TICKS(2000));
           activeBuzzerOff();
-          offLED(RED);
-          PRINTF("Normal: Buzzer OFF, Red LED OFF\r\n");
         }
       }
 
       else if (sscanf(msg.message, "TEMP:%f,HUMI:%f", &temp, &humi) == 2) {
         PRINTF("Parsed Temp: %d.%02d, Humi: %d.%02d\r\n", (int)temp,
                (int)(temp * 100) % 100, (int)humi, (int)(humi * 100) % 100);
-
-        if (humi > 75.0) {
-          onLED(BLUE);
-          PRINTF("Alert: High Humidity, Blue LED ON\r\n");
-        } else {
-          offLED(BLUE);
-          PRINTF("Normal: Blue LED OFF\r\n");
-        }
-
-        if (temp > 35.0) {
-          onLED(GREEN);
-          PRINTF("Alert: High Temp, Green LED ON\r\n");
-        } else {
-          offLED(GREEN);
-          PRINTF("Normal: Green LED OFF\r\n");
-        }
       } else {
         PRINTF("Unknown Message format: %s\r\n", msg.message);
       }
@@ -327,6 +354,12 @@ void shockTask(void *p) {
       sendMessage(buffer);
 
       g_state = STATE_SHOCK;
+      g_is_shocked = true; // Latched for rapid blinking
+
+      // Short pulse for shock event (2 seconds)
+      activeBuzzerOn();
+      vTaskDelay(pdMS_TO_TICKS(2000));
+      activeBuzzerOff();
 
       last_time = now;
     }
@@ -344,14 +377,34 @@ void hallTask(void *pvParameters) {
       sendMessage(buffer);
 
       g_state = STATE_BOX_OPEN;
+      g_is_compromised = true; // Latched
+
+      // Buzzer pulse for box open (2 seconds as per user request)
+      activeBuzzerOn();
+      vTaskDelay(pdMS_TO_TICKS(2000));
+      activeBuzzerOff();
 
     } else {
       PRINTF("Box Closed!\r\n");
       sprintf(buffer, "Box Closed!\n");
       sendMessage(buffer);
-
-      g_state = STATE_SAFE;
+      // Removed automatic STATE_SAFE reset; must be manually reset by SW2
     }
+  }
+}
+
+void resetTask(void *pvParameters) {
+  while (1) {
+    // Check SW2 (PTC3) — assumes active low with pull-up
+    if (!(GPIOC->PDIR & (1 << SW2_PIN))) {
+      PRINTF("System Reset via SW2\r\n");
+      g_is_compromised = false;
+      g_is_shocked = false;
+      g_state = STATE_SAFE;
+      activeBuzzerOff();
+      vTaskDelay(pdMS_TO_TICKS(500)); // Debounce
+    }
+    vTaskDelay(pdMS_TO_TICKS(50));
   }
 }
 
@@ -371,6 +424,7 @@ int main(void) {
   initActiveBuzzer();
   activeBuzzerOff();
   initIRQ();
+  initButtons();
   initUART2(9600);
 
   // Initialise on-board segment LCD and show startup state
@@ -394,6 +448,11 @@ int main(void) {
 
   xTaskCreate(lcdTask, "lcdTask", configMINIMAL_STACK_SIZE + 100, NULL, 1,
               NULL);
+
+  xTaskCreate(indicatorTask, "indicatorTask", configMINIMAL_STACK_SIZE, NULL, 1,
+              NULL);
+
+  xTaskCreate(resetTask, "resetTask", configMINIMAL_STACK_SIZE, NULL, 1, NULL);
 
   vTaskStartScheduler();
 

@@ -3,22 +3,22 @@
  *
  * LCD glass: Lumex LCD-S401M16KR (DS1 on board)
  *
- * FRDM-MCXC444 SLCD wiring (from board user manual Table 13):
+ * FRDM-MCXC444 SLCD wiring (from board schematic):
  *
  *   Glass Pin  GPIO    LCD_P   Function
  *   ─────────  ──────  ──────  ────────────────────────────
  *    1         PTE20   P59     COM0  (back-plane)
- *    2         PTE21   P60     1D / 1E / 1G / 1F  (digit 1 lo)
- *    3         PTB18   P14     1DP/ 1C / 1B / 1A  (digit 1 hi)
- *    4         PTB19   P15     2D / 2E / 2G / 2F  (digit 2 lo)
- *    5         PTC0    P20     COM1  (back-plane)
- *    6         PTC4    P24     2DP/ 2C / 2B / 2A  (digit 2 hi)
- *    7         PTC6    P26     3D / 3E / 3G / 3F  (digit 3 lo)
- *    8         PTC7    P27     COM2  (back-plane)
- *    9         PTD0    P40     3DP/ 3C / 3B / 3A  (digit 3 hi)
- *   10         PTD2    P42     4D / 4E / 4G / 4F  (digit 4 lo)
- *   11         PTD3    P43     COM3  (back-plane)
- *   12         PTD4    P44     COL/ 4C / 4B / 4A  (digit 4 hi)
+ *    2         PTE21   P60     COM1  (back-plane)
+ *    3         PTB18   P14     COM2  (back-plane)
+ *    4         PTB19   P15     COM3  (back-plane)
+ *    5         PTC0    P20     D0: 1D / 1E / 1G / 1F  (digit 1 lo)
+ *    6         PTC4    P24     D1: 1DP/ 1C / 1B / 1A  (digit 1 hi)
+ *    7         PTC6    P26     D2: 2D / 2E / 2G / 2F  (digit 2 lo)
+ *    8         PTC7    P27     D3: 2DP/ 2C / 2B / 2A  (digit 2 hi)
+ *    9         PTD0    P40     D4: 3D / 3E / 3G / 3F  (digit 3 lo)
+ *   10         PTD2    P42     D5: 3DP/ 3C / 3B / 3A  (digit 3 hi)
+ *   11         PTD3    P43     D6: 4D / 4E / 4G / 4F  (digit 4 lo)
+ *   12         PTD4    P44     D7: COL/ 4C / 4B / 4A  (digit 4 hi)
  *
  * WF8B bit mapping (1/4 duty, 4 COM):
  *   bit0 = COM0 (phase A)
@@ -47,20 +47,20 @@
 /* ================================================================
  *  Back-plane LCD pin numbers (index into WF8B[])
  * ================================================================ */
-#define BP_COM0   59   /* PTE20 */
-#define BP_COM1   20   /* PTC0  */
-#define BP_COM2   27   /* PTC7  */
-#define BP_COM3   43   /* PTD3  */
+#define BP_COM0   59   /* PTE20 — glass pin 1 */
+#define BP_COM1   60   /* PTE21 — glass pin 2 */
+#define BP_COM2   14   /* PTB18 — glass pin 3 */
+#define BP_COM3   15   /* PTB19 — glass pin 4 */
 
 /* ================================================================
  *  Front-plane pairs: { lo_pin, hi_pin } per digit
  *  lo = D/E/G/F     hi = DP(or COL)/C/B/A
  * ================================================================ */
 static const uint8_t fp[4][2] = {
-    { 60, 14 },   /* digit 1 (leftmost):  PTE21, PTB18 */
-    { 15, 24 },   /* digit 2:             PTB19, PTC4  */
-    { 26, 40 },   /* digit 3:             PTC6,  PTD0  */
-    { 42, 44 },   /* digit 4 (rightmost): PTD2,  PTD4  */
+    { 20, 24 },   /* digit 1 (leftmost):  D0=PTC0(P20),  D1=PTC4(P24) */
+    { 26, 27 },   /* digit 2:             D2=PTC6(P26),  D3=PTC7(P27) */
+    { 40, 42 },   /* digit 3:             D4=PTD0(P40),  D5=PTD2(P42) */
+    { 43, 44 },   /* digit 4 (rightmost): D6=PTD3(P43),  D7=PTD4(P44) */
 };
 
 /* ================================================================
@@ -135,39 +135,39 @@ void SLCD_DisplayInit(void)
     /* 3. Pin-mux: set every LCD pin to ALT0 (MUX=0 → LCD/analog) */
     /* Back-planes */
     PORTE->PCR[20] = 0;   /* LCD_P59  COM0 */
-    PORTC->PCR[0]  = 0;   /* LCD_P20  COM1 */
-    PORTC->PCR[7]  = 0;   /* LCD_P27  COM2 */
-    PORTD->PCR[3]  = 0;   /* LCD_P43  COM3 */
+    PORTE->PCR[21] = 0;   /* LCD_P60  COM1 */
+    PORTB->PCR[18] = 0;   /* LCD_P14  COM2 */
+    PORTB->PCR[19] = 0;   /* LCD_P15  COM3 */
     /* Front-planes */
-    PORTE->PCR[21] = 0;   /* LCD_P60  digit 1 lo */
-    PORTB->PCR[18] = 0;   /* LCD_P14  digit 1 hi */
-    PORTB->PCR[19] = 0;   /* LCD_P15  digit 2 lo */
-    PORTC->PCR[4]  = 0;   /* LCD_P24  digit 2 hi */
-    PORTC->PCR[6]  = 0;   /* LCD_P26  digit 3 lo */
-    PORTD->PCR[0]  = 0;   /* LCD_P40  digit 3 hi */
-    PORTD->PCR[2]  = 0;   /* LCD_P42  digit 4 lo */
-    PORTD->PCR[4]  = 0;   /* LCD_P44  digit 4 hi */
+    PORTC->PCR[0]  = 0;   /* LCD_P20  D0 — digit 1 lo */
+    PORTC->PCR[4]  = 0;   /* LCD_P24  D1 — digit 1 hi */
+    PORTC->PCR[6]  = 0;   /* LCD_P26  D2 — digit 2 lo */
+    PORTC->PCR[7]  = 0;   /* LCD_P27  D3 — digit 2 hi */
+    PORTD->PCR[0]  = 0;   /* LCD_P40  D4 — digit 3 lo */
+    PORTD->PCR[2]  = 0;   /* LCD_P42  D5 — digit 3 hi */
+    PORTD->PCR[3]  = 0;   /* LCD_P43  D6 — digit 4 lo */
+    PORTD->PCR[4]  = 0;   /* LCD_P44  D7 — digit 4 hi */
 
     /* 4. Enable LCD pins in PEN registers
      *    PEN[0] covers LCD_P0..31,  PEN[1] covers LCD_P32..63 */
-    LCD->PEN[0] = (1u << 14)    /* LCD_P14 */
-                | (1u << 15)    /* LCD_P15 */
-                | (1u << 20)    /* LCD_P20 BP */
-                | (1u << 24)    /* LCD_P24 */
-                | (1u << 26)    /* LCD_P26 */
-                | (1u << 27);   /* LCD_P27 BP */
-    LCD->PEN[1] = (1u << (40 - 32))   /* LCD_P40 */
-                | (1u << (42 - 32))   /* LCD_P42 */
-                | (1u << (43 - 32))   /* LCD_P43 BP */
-                | (1u << (44 - 32))   /* LCD_P44 */
-                | (1u << (59 - 32))   /* LCD_P59 BP */
-                | (1u << (60 - 32));  /* LCD_P60 */
+    LCD->PEN[0] = (1u << 14)    /* LCD_P14 COM2 */
+                | (1u << 15)    /* LCD_P15 COM3 */
+                | (1u << 20)    /* LCD_P20 D0 */
+                | (1u << 24)    /* LCD_P24 D1 */
+                | (1u << 26)    /* LCD_P26 D2 */
+                | (1u << 27);   /* LCD_P27 D3 */
+    LCD->PEN[1] = (1u << (40 - 32))   /* LCD_P40 D4 */
+                | (1u << (42 - 32))   /* LCD_P42 D5 */
+                | (1u << (43 - 32))   /* LCD_P43 D6 */
+                | (1u << (44 - 32))   /* LCD_P44 D7 */
+                | (1u << (59 - 32))   /* LCD_P59 COM0 */
+                | (1u << (60 - 32));  /* LCD_P60 COM1 */
 
     /* 5. Mark back-plane pins in BPEN registers */
-    LCD->BPEN[0] = (1u << 20)    /* LCD_P20 COM1 */
-                 | (1u << 27);   /* LCD_P27 COM2 */
-    LCD->BPEN[1] = (1u << (43 - 32))   /* LCD_P43 COM3 */
-                 | (1u << (59 - 32));  /* LCD_P59 COM0 */
+    LCD->BPEN[0] = (1u << 14)    /* LCD_P14 COM2 */
+                 | (1u << 15);   /* LCD_P15 COM3 */
+    LCD->BPEN[1] = (1u << (59 - 32))   /* LCD_P59 COM0 */
+                 | (1u << (60 - 32));  /* LCD_P60 COM1 */
 
     /* 6. Set back-plane phase assignments */
     LCD->WF8B[BP_COM0] = 0x01;   /* phase A */
