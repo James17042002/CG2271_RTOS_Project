@@ -347,7 +347,7 @@ void shockTask(void *p) {
 
     TickType_t now = xTaskGetTickCount();
 
-    if ((now - last_time) > pdMS_TO_TICKS(50)) {
+    if ((now - last_time) > pdMS_TO_TICKS(500)) {
       PRINTF("Shock Detected!\r\n");
 
       sprintf(buffer, "Shock Detected!\n");
@@ -367,6 +367,7 @@ void shockTask(void *p) {
 }
 
 void hallTask(void *pvParameters) {
+  TickType_t last_buzzer_time = 0;
   char buffer[MAX_MSG_LEN];
   while (1) {
     xSemaphoreTake(hall_sema, portMAX_DELAY);
@@ -379,10 +380,14 @@ void hallTask(void *pvParameters) {
       g_state = STATE_BOX_OPEN;
       g_is_compromised = true; // Latched
 
-      // Buzzer pulse for box open (2 seconds as per user request)
-      activeBuzzerOn();
-      vTaskDelay(pdMS_TO_TICKS(2000));
-      activeBuzzerOff();
+      // Debounced buzzer: only fire if enough time has passed since last buzz
+      TickType_t now = xTaskGetTickCount();
+      if ((now - last_buzzer_time) > pdMS_TO_TICKS(3000)) {
+        activeBuzzerOn();
+        vTaskDelay(pdMS_TO_TICKS(2000));
+        activeBuzzerOff();
+        last_buzzer_time = xTaskGetTickCount();
+      }
 
     } else {
       PRINTF("Box Closed!\r\n");
@@ -449,10 +454,11 @@ int main(void) {
   xTaskCreate(lcdTask, "lcdTask", configMINIMAL_STACK_SIZE + 100, NULL, 1,
               NULL);
 
-  xTaskCreate(indicatorTask, "indicatorTask", configMINIMAL_STACK_SIZE, NULL, 1,
-              NULL);
+  xTaskCreate(indicatorTask, "indicatorTask", configMINIMAL_STACK_SIZE + 100,
+              NULL, 1, NULL);
 
-  xTaskCreate(resetTask, "resetTask", configMINIMAL_STACK_SIZE, NULL, 1, NULL);
+  xTaskCreate(resetTask, "resetTask", configMINIMAL_STACK_SIZE + 100, NULL, 1,
+              NULL);
 
   vTaskStartScheduler();
 
