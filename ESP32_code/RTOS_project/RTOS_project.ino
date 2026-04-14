@@ -1,18 +1,17 @@
 #define ENABLE_USER_AUTH
 #define ENABLE_DATABASE
 
+#include "DHT.h"
 #include <Arduino.h>
-#include <WiFi.h>
-#include <WiFiClientSecure.h>
-#include <HTTPClient.h>
+#include <ArduinoJson.h>
 #include <FirebaseClient.h>
 #include <FirebaseJson.h>
-#include <ArduinoJson.h>
-#include "DHT.h"
-#include "event_groups.h"
+#include <HTTPClient.h> // Added for GeoLocation
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
 
 // Hardware Configuration
-#define DHTPIN 3     
+#define DHTPIN 3
 #define DHTTYPE DHT11
 #define LDR_PIN 5
 
@@ -21,20 +20,21 @@
 #define WIFI_PASS "sickening123"
 
 // Firebase Project Configuration
-#define Web_API_KEY "AIzaSyCODz9_kjBFIPd3h9uDQAtDx_IEcKxqpjQ"
-#define DATABASE_URL "https://cg2271-rtos-default-rtdb.asia-southeast1.firebasedatabase.app"
-#define USER_EMAIL "irwanahmed001@gmail.com"
-#define USER_PASS "cg2271"
+#define Web_API_KEY "AIzaSyCODz9_kjBFIPd3h9uDQAtDx_IEcKxqpjQ" // API Key
+#define DATABASE_URL                                                           \
+  "https://cg2271-rtos-default-rtdb.asia-southeast1.firebasedatabase.app" // URL
+#define USER_EMAIL "irwanahmed001@gmail.com" // User Email
+#define USER_PASS "cg2271"                   // User Password
 
 // Firebase Objects
 typedef WiFiClientSecure SSL_CLIENT;
 
-SSL_CLIENT ssl_client, stream_ssl_client;
+SSL_CLIENT ssl_client;
 FirebaseApp app;
 
 using AsyncClient = AsyncClientClass;
 
-AsyncClient aClient(ssl_client); 
+AsyncClient aClient(ssl_client);
 RealtimeDatabase Database;
 UserAuth user_auth(Web_API_KEY, USER_EMAIL, USER_PASS);
 
@@ -48,43 +48,58 @@ struct ShipmentData {
   int light = 0;
   float lat = 0;
   float lng = 0;
+  int shockCount = 0;
+  int boxOpenCount = 0;
   char status[64] = "Initialized";
 } currentShipment;
 
 float geoLat = 0, geoLng = 0;
 
-bool isActiveRun = false;
+bool isActiveRun = false;  // Local flag to control data upload
+bool prevRunState = false; // Edge detection for run start
 
-// WiFi Event Group
-EventGroupHandle_t wifiEventGroup;
-#define WIFI_CONNECTED_BIT BIT0
+// Flags for TaskFirebase to handle asynchronous triggers
+volatile bool needConfigFetch = false;
+volatile bool mcuNotifyState = false;
+
+// Thresholds from Firebase run_config
+float tempThreshold = 50.0;
+float humiThreshold = 90.0;
+int lightThreshold = 400;
+
+uint16_t tempExceededCount = 0;
+uint16_t humiExceededCount = 0;
+uint16_t lightExceededCount = 0;
 
 DHT dht(DHTPIN, DHTTYPE);
 
 // RTOS Handles
 SemaphoreHandle_t dataMutex;
 SemaphoreHandle_t uartMutex;
+SemaphoreHandle_t firebaseMutex;
 
-// Helper Function Prototype Declarations
+// Helper Function Prototype Declarations (Helper Functions at the bottom)
 void getGeoLocation(float &lat, float &lng);
 void processData(AsyncResult &aResult);
+void fetchThresholds(void);
 
 void setup() {
   Serial.begin(115200);
   Serial1.begin(9600, SERIAL_8N1, NEW_RX_PIN, NEW_TX_PIN);
   dht.begin();
-  
-  // Connect WiFi
+
+  // Connect WiFi FIRST
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   Serial.print("Connecting to WiFi");
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
-    Serial.print(".");
+    Serial.println(".");
   }
   Serial.println("\nWiFi connected, IP: " + WiFi.localIP().toString());
 
   // Initialize Firebase
-  ssl_client.setInsecure();
+  ssl_client
+      .setInsecure(); // Required for ESP32 to skip certificate chain validation
   initializeApp(aClient, app, getAuth(user_auth), processData);
   app.getApp<RealtimeDatabase>(Database);
   Database.url(DATABASE_URL);
@@ -92,41 +107,50 @@ void setup() {
   // RTOS Setup
   dataMutex = xSemaphoreCreateMutex();
   uartMutex = xSemaphoreCreateMutex();
-  wifiEventGroup = xEventGroupCreate();
-  xEventGroupSetBits(wifiEventGroup, WIFI_CONNECTED_BIT); // WiFi already connected
+  firebaseMutex = xSemaphoreCreateMutex();
 
-  if (uartMutex != NULL && dataMutex != NULL && wifiEventGroup != NULL) {
-    xTaskCreate(TaskWiFiManager, "WiFiTask", 4096, NULL, 3, NULL);
-    xTaskCreate(TaskTempHumid, "TempHumTask", 4096, NULL, 1, NULL);
-    xTaskCreate(TaskPhotoresistor, "PhotoTask", 2048, NULL, 2, NULL);
+  if (uartMutex != NULL) {
+    xTaskCreate(TaskWiFiManager, "WiFiMgrTask", 1536, NULL, 3, NULL);
+    xTaskCreate(TaskTempHumid, "TempHumTask", 2560, NULL, 1, NULL);
+    xTaskCreate(TaskPhotoresistor, "PhotoTask", 1536, NULL, 2, NULL);
     xTaskCreate(TaskReceiveFromMCXC444, "RecvTask", 2048, NULL, 1, NULL);
-    xTaskCreate(TaskGeoLocation, "GeoTask", 8192, NULL, 1, NULL);
-    xTaskCreate(TaskFirebaseUpdate, "FirebaseTask", 8192, NULL, 1, NULL);
-    xTaskCreate(TaskMonitorActiveRun, "MonitorTask", 4096, NULL, 1, NULL);
+    xTaskCreate(TaskGeoLocation, "GeoTask", 3072, NULL, 1, NULL);
+    xTaskCreate(TaskFirebase, "FirebaseTask", 8192, NULL, 1, NULL);
   }
 }
 
 void TaskWiFiManager(void *pvParameters) {
+  const int maxRetryTime = 30000; // 30 seconds grace period
+  int lostConnectionAt = 0;
+  bool isConnectionLost = false;
+
   for (;;) {
     if (WiFi.status() != WL_CONNECTED) {
-      xEventGroupClearBits(wifiEventGroup, WIFI_CONNECTED_BIT);
-      Serial.println("[WIFI] Disconnected. Reconnecting...");
-      WiFi.disconnect();
-      WiFi.begin(WIFI_SSID, WIFI_PASS);
-      int retries = 0;
-      while (WiFi.status() != WL_CONNECTED && retries < 20) {
-        vTaskDelay(pdMS_TO_TICKS(500));
-        retries++;
+      if (!isConnectionLost) {
+        // Record the time when connection was first lost
+        lostConnectionAt = millis();
+        isConnectionLost = true;
+        Serial.println("[WIFI] Connection lost! Starting grace period...");
       }
-      if (WiFi.status() == WL_CONNECTED) {
-        xEventGroupSetBits(wifiEventGroup, WIFI_CONNECTED_BIT);
-        Serial.printf("[WIFI] Reconnected! IP: %s\n", WiFi.localIP().toString().c_str());
-      } else {
-        Serial.println("[WIFI] Failed. Retrying in 5s...");
+
+      // Check if we have been disconnected longer than the grace period
+      if (millis() - lostConnectionAt > maxRetryTime) {
+        Serial.println(
+            "[WIFI] Critical: Connection lost for >30s. Rebooting...");
+        vTaskDelay(
+            pdMS_TO_TICKS(500)); // Brief delay for Serial prints to clear
+        ESP.restart();
       }
     } else {
-      xEventGroupSetBits(wifiEventGroup, WIFI_CONNECTED_BIT);
+      // Connection is healthy
+      if (isConnectionLost) {
+        Serial.println("[WIFI] Connection restored.");
+        isConnectionLost = false;
+      }
     }
+
+    // Check status and memory every 5 seconds
+    Serial.printf("[SYSTEM] Free Heap: %u bytes\n", ESP.getFreeHeap());
     vTaskDelay(pdMS_TO_TICKS(5000));
   }
 }
@@ -136,6 +160,7 @@ void TaskTempHumid(void *pvParameters) {
     float h = dht.readHumidity();
     float t = dht.readTemperature();
 
+    // Add temp and hum readings to Shipment Data
     if (xSemaphoreTake(dataMutex, portMAX_DELAY)) {
       if (!isnan(h) && !isnan(t)) {
         currentShipment.temp = t;
@@ -144,15 +169,38 @@ void TaskTempHumid(void *pvParameters) {
       xSemaphoreGive(dataMutex);
     }
 
+    /* --- Threshold Checks (Only during isActiveRun) --- */
+    if (isActiveRun && !isnan(h) && !isnan(t)) {
+      if (t > tempThreshold) {
+        tempExceededCount++;
+        Serial.printf("[THRESH] Temp %.2f > %.2f (count=%u)\n", t,
+                      tempThreshold, tempExceededCount);
+        if (xSemaphoreTake(uartMutex, portMAX_DELAY)) {
+          Serial1.printf("TEXC:%u\n", tempExceededCount);
+          xSemaphoreGive(uartMutex);
+        }
+      }
+      if (h > humiThreshold) {
+        humiExceededCount++;
+        Serial.printf("[THRESH] Humi %.2f > %.2f (count=%u)\n", h,
+                      humiThreshold, humiExceededCount);
+        if (xSemaphoreTake(uartMutex, portMAX_DELAY)) {
+          Serial1.printf("HEXC:%u\n", humiExceededCount);
+          xSemaphoreGive(uartMutex);
+        }
+      }
+    }
+
+    // Also send short status to MCXC444 as per original requirement
     if (xSemaphoreTake(uartMutex, portMAX_DELAY)) {
       if (!isnan(h) && !isnan(t)) {
         Serial1.printf("TEMP:%.2f,HUMI:%.2f\n", t, h);
         Serial.printf("[ENV] UART Sent: T:%.2f H:%.2f\n", t, h);
       }
-      xSemaphoreGive(uartMutex);
+      xSemaphoreGive(uartMutex); // Release resource
     }
 
-    vTaskDelay(pdMS_TO_TICKS(2000)); 
+    vTaskDelay(pdMS_TO_TICKS(2000));
   }
 }
 
@@ -160,15 +208,30 @@ void TaskPhotoresistor(void *pvParameters) {
   for (;;) {
     int lightValue = analogRead(LDR_PIN);
 
+    // Add light value readings to Shipment data
     if (xSemaphoreTake(dataMutex, portMAX_DELAY)) {
       currentShipment.light = lightValue;
       xSemaphoreGive(dataMutex);
     }
 
+    /* --- Threshold Check (Only during isActiveRun) --- */
+    if (isActiveRun) {
+      if (lightValue > lightThreshold) {
+        lightExceededCount++;
+        Serial.printf("[THRESH] Light %d > %d (count=%u)\n", lightValue,
+                      lightThreshold, lightExceededCount);
+        if (xSemaphoreTake(uartMutex, portMAX_DELAY)) {
+          Serial1.printf("LEXC:%u\n", lightExceededCount);
+          xSemaphoreGive(uartMutex);
+        }
+      }
+    }
+
+    // Lock UART resource before printing
     if (xSemaphoreTake(uartMutex, portMAX_DELAY)) {
       Serial1.printf("LIGHT:%d\n", lightValue);
       Serial.printf("[SEC] UART Sent: L:%d\n", lightValue);
-      xSemaphoreGive(uartMutex);
+      xSemaphoreGive(uartMutex); // Release resource
     }
 
     vTaskDelay(pdMS_TO_TICKS(500));
@@ -177,11 +240,9 @@ void TaskPhotoresistor(void *pvParameters) {
 
 void TaskGeoLocation(void *pvParameters) {
   for (;;) {
-    // Block until WiFi is connected — zero CPU cost while waiting
-    xEventGroupWaitBits(wifiEventGroup, WIFI_CONNECTED_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
-
-    getGeoLocation(geoLat, geoLng);
-
+    if (WiFi.status() == WL_CONNECTED) {
+      getGeoLocation(geoLat, geoLng);
+    }
     if (xSemaphoreTake(dataMutex, portMAX_DELAY)) {
       currentShipment.lat = geoLat;
       currentShipment.lng = geoLng;
@@ -194,15 +255,33 @@ void TaskGeoLocation(void *pvParameters) {
 void TaskReceiveFromMCXC444(void *pvParameters) {
   char buffer[256];
   int idx = 0;
+  int val;
 
   for (;;) {
     if (Serial1.available()) {
       char c = Serial1.read();
       if (c == '\n') {
         buffer[idx] = '\0';
-        Serial.printf("[MCXC444] %s\n", buffer);
+        Serial.printf("[MCU] %s\n", buffer);
+
         if (xSemaphoreTake(dataMutex, portMAX_DELAY)) {
-          strncpy(currentShipment.status, buffer, 63);
+          // 1. Parsing Shock Count
+          if (sscanf(buffer, "SHOCK:%d", &val) == 1) {
+            currentShipment.shockCount = val;
+          }
+          // 2. Parsing Box Open Count
+          else if (sscanf(buffer, "BOX_OPEN:%d", &val) == 1) {
+            currentShipment.boxOpenCount = val;
+            strncpy(currentShipment.status, "Box Opened", 63);
+          }
+          // 3. Parsing Box Closed
+          else if (strstr(buffer, "BOX_CLOSED") != NULL) {
+            strncpy(currentShipment.status, "Box Closed", 63);
+          }
+          // 4. Fallback for other messages
+          else {
+            strncpy(currentShipment.status, buffer, 63);
+          }
           xSemaphoreGive(dataMutex);
         }
         idx = 0;
@@ -214,81 +293,188 @@ void TaskReceiveFromMCXC444(void *pvParameters) {
   }
 }
 
-void TaskFirebaseUpdate(void *pvParameters) {
-  for (;;) {
-    // Block until WiFi is connected — zero CPU cost while waiting
-    xEventGroupWaitBits(wifiEventGroup, WIFI_CONNECTED_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
+void TaskFirebase(void *pvParameters) {
+  uint32_t lastPoll = 0;
+  uint32_t lastPush = 0;
 
-    if (app.ready() && isActiveRun) {
-      FirebaseJson json;
-      
-      if (xSemaphoreTake(dataMutex, portMAX_DELAY)) {
-        json.add("temperature", currentShipment.temp);
-        json.add("humidity", currentShipment.hum);
-        json.add("light_level", currentShipment.light);
-        json.add("latitude", currentShipment.lat);
-        json.add("longitude", currentShipment.lng);
-        json.add("event_status", currentShipment.status);
-        json.set("ts/.sv", "timestamp");
-        xSemaphoreGive(dataMutex);
+  for (;;) {
+    uint32_t now = millis();
+
+    // 0. Handle asynchronous triggers (decoupled from callbacks)
+    if (mcuNotifyState) {
+      if (xSemaphoreTake(uartMutex, portMAX_DELAY)) {
+        Serial1.printf("RUN:%d\n", isActiveRun ? 1 : 0);
+        xSemaphoreGive(uartMutex);
       }
-
-      String jsonStr;
-      json.toString(jsonStr);
-      object_t payload(jsonStr);
-
-      Serial.println("[CLOUD] Pushing Log...");
-      Database.push(aClient, "/shipment_logs", payload, processData);
-    } else if (!isActiveRun) {
-      Serial.println("[CLOUD] Standby: Active_Run is FALSE");
+      mcuNotifyState = false;
     }
-    
-    vTaskDelay(pdMS_TO_TICKS(15000)); 
-  }
-}
-
-void TaskMonitorActiveRun(void *pvParameters) {
-  for (;;) {
-    // Block until WiFi is connected — zero CPU cost while waiting
-    xEventGroupWaitBits(wifiEventGroup, WIFI_CONNECTED_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
-
-    if (app.ready()) {
-      Database.get(aClient, "/Active_Run", processData);
+    if (needConfigFetch) {
+      fetchThresholds();
+      needConfigFetch = false;
     }
-    vTaskDelay(pdMS_TO_TICKS(10000)); 
+
+    // 1. Poll Active_Run (Every 10 seconds)
+    if (now - lastPoll >= 10000 || lastPoll == 0) {
+      if (app.ready()) {
+        if (xSemaphoreTake(firebaseMutex, portMAX_DELAY)) {
+          Database.get(aClient, "/Active_Run", processData);
+          xSemaphoreGive(firebaseMutex);
+        }
+      }
+      lastPoll = now;
+    }
+
+    // 2. Push Shipment Logs (Every 15 seconds, only if active)
+    if (now - lastPush >= 15000) {
+      if (app.ready() && isActiveRun) {
+        static FirebaseJson json;
+        static String jsonStr;
+
+        json.clear();
+
+        if (xSemaphoreTake(dataMutex, portMAX_DELAY)) {
+          json.add("temperature", currentShipment.temp);
+          json.add("humidity", currentShipment.hum);
+          json.add("light_level", currentShipment.light);
+          json.add("latitude", currentShipment.lat);
+          json.add("longitude", currentShipment.lng);
+          json.add("shocks", currentShipment.shockCount);
+          json.add("box_opens", currentShipment.boxOpenCount);
+          json.add("event_status", currentShipment.status);
+          json.set("ts/.sv", "timestamp");
+          xSemaphoreGive(dataMutex);
+        }
+
+        jsonStr = "";
+        json.toString(jsonStr);
+        
+        if (jsonStr.length() > 0 && jsonStr != "{}") {
+          object_t payload(jsonStr); 
+
+          Serial.println("[CLOUD] Attempt to Push Log...");
+          if (xSemaphoreTake(firebaseMutex, portMAX_DELAY)) {
+            Database.push(aClient, "/shipment_logs", payload, processData);
+            xSemaphoreGive(firebaseMutex);
+          }
+        }
+      } else if (!isActiveRun) {
+        Serial.println("[CLOUD] Standby: Active_Run is FALSE");
+      }
+      lastPush = now;
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(1000)); // Sleep for 1s between checks
   }
 }
 
 void loop() {
+  // Required to maintain Firebase Auth and Async tasks
   app.loop();
 }
 
 // Helper Functions
 void getGeoLocation(float &lat, float &lng) {
+  // Use a local WiFiClient to ensure it doesn't interfere with the global SSL
+  // client
+  WiFiClient client;
   HTTPClient http;
-  http.begin("http://ip-api.com/json/?fields=lat,lon");
-  int code = http.GET();
 
-  if (code == 200) {
-    String response = http.getString();
-    int latIdx = response.indexOf("\"lat\":") + 6;
-    int lonIdx = response.indexOf("\"lon\":") + 6;
-    lat = response.substring(latIdx).toFloat();
-    lng = response.substring(lonIdx).toFloat();
-    Serial.printf("[GEO] lat: %.4f, lng: %.4f\n", lat, lng);
+  Serial.println("[GEO] Starting request...");
+
+  if (http.begin(client, "http://ip-api.com/json/?fields=lat,lon")) {
+    http.setTimeout(5000); // 5 second timeout
+    int httpCode = http.GET();
+
+    if (httpCode == HTTP_CODE_OK) {
+      String response = http.getString();
+      Serial.printf("[GEO] Raw Response: %s\n", response.c_str());
+
+      int latPos = response.indexOf("\"lat\":");
+      int lonPos = response.indexOf("\"lon\":");
+
+      if (latPos != -1 && lonPos != -1) {
+        lat = response.substring(latPos + 6).toFloat();
+        lng = response.substring(lonPos + 6).toFloat();
+        Serial.printf("[GEO] Success! lat: %.4f, lng: %.4f\n", lat, lng);
+      } else {
+        Serial.println("[GEO] Error: JSON fields not found");
+      }
+    } else {
+      Serial.printf("[GEO] HTTP GET failed, error: %s\n",
+                    http.errorToString(httpCode).c_str());
+    }
+    http.end();
+  } else {
+    Serial.println("[GEO] Unable to connect to host");
   }
-  http.end();
+}
+
+void fetchThresholds(void) {
+  if (app.ready()) {
+    Serial.println("[CONFIG] Fetching thresholds from Firebase...");
+    if (xSemaphoreTake(firebaseMutex, portMAX_DELAY)) {
+      Database.get(aClient, "/run_config/temp_threshold", processData);
+      Database.get(aClient, "/run_config/humidity_threshold", processData);
+      Database.get(aClient, "/run_config/light_threshold", processData);
+      xSemaphoreGive(firebaseMutex);
+    }
+  }
 }
 
 void processData(AsyncResult &aResult) {
   if (aResult.isError()) {
-    Serial.printf("Firebase Error: %s\n", aResult.error().message().c_str());
-  } else if (aResult.available()) {
-    if (aResult.path() == "/Active_Run") {
+    Serial.printf("Firebase Error [%s]: %s\n", aResult.path().c_str(), aResult.error().message().c_str());
+    return;
+  }
+
+  if (aResult.available()) {
+    String path = aResult.path();
+
+    // 1. Handle Active_Run State Change
+    if (path == "/Active_Run") {
       isActiveRun = aResult.to<RealtimeDatabaseResult>().to<bool>();
-      Serial.printf("[SYSTEM] Active_Run is now: %s\n", isActiveRun ? "TRUE" : "FALSE");
-    } else {
-      Serial.println("Firebase Update Successful");
+
+      // Signal triggers to TaskFirebase (Avoid network/UART calls in callback)
+      mcuNotifyState = true;
+
+      Serial.printf("[SYSTEM] Active_Run is now: %s\n",
+                    isActiveRun ? "TRUE" : "FALSE");
+
+      // Detection of Run Start (transition from FALSE to TRUE)
+      if (isActiveRun && !prevRunState) {
+        Serial.println("[SYSTEM] Run start detected signal...");
+        
+        // Reset counters for the new run
+        tempExceededCount = 0;
+        humiExceededCount = 0;
+        lightExceededCount = 0;
+        if (xSemaphoreTake(dataMutex, portMAX_DELAY)) {
+          currentShipment.shockCount = 0;
+          currentShipment.boxOpenCount = 0;
+          xSemaphoreGive(dataMutex);
+        }
+
+        needConfigFetch = true;
+      }
+      prevRunState = isActiveRun;
+    }
+
+    // 2. Handle run_config Thresholds
+    else if (path == "/run_config/temp_threshold") {
+      tempThreshold = aResult.to<RealtimeDatabaseResult>().to<float>();
+      Serial.printf("[CONFIG] temp_threshold updated: %.2f\n", tempThreshold);
+    } else if (path == "/run_config/humidity_threshold") {
+      humiThreshold = aResult.to<RealtimeDatabaseResult>().to<float>();
+      Serial.printf("[CONFIG] humidity_threshold updated: %.2f\n",
+                    humiThreshold);
+    } else if (path == "/run_config/light_threshold") {
+      lightThreshold = aResult.to<RealtimeDatabaseResult>().to<int>();
+      Serial.printf("[CONFIG] light_threshold updated: %d\n", lightThreshold);
+    }
+
+    // 3. Handle Other Updates (General Success)
+    else {
+      Serial.printf("Firebase OK: %s\n", path.c_str());
     }
   }
 }
