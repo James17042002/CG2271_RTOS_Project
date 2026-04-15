@@ -18,13 +18,13 @@
  * ================================================================ */
 
 // LED Pins
-#define RED_PIN 31   // PTE31
-#define GREEN_PIN 5  // PTD5
-#define BLUE_PIN 29  // PTE29
+#define RED_PIN 31  // PTE31
+#define GREEN_PIN 5 // PTD5
+#define BLUE_PIN 29 // PTE29
 
 // Sensor Pins
-#define HALL_PIN 4   // PTA4
-#define SHOCK_PIN 5  // PTA5
+#define HALL_PIN 4  // PTA4
+#define SHOCK_PIN 5 // PTA5
 
 // Buzzer Pin
 #define ACTIVE_BUZZER_PIN 0 // PTB0
@@ -38,15 +38,15 @@ typedef enum tl { RED, GREEN, BLUE } TLED;
  *  Global State
  * ================================================================ */
 
-volatile bool g_run_active    = false;  // Run state from ESP32
-volatile bool g_is_box_open   = false;  // Current box state
+volatile bool g_run_active = false;  // Run state from ESP32
+volatile bool g_is_box_open = false; // Current box state
 
 // Counters — displayed on LCD
-volatile uint16_t g_shock_count    = 0;
+volatile uint16_t g_shock_count = 0;
 volatile uint16_t g_box_open_count = 0;
-volatile uint16_t g_temp_exceeded  = 0;  // received from ESP32
-volatile uint16_t g_light_exceeded = 0;  // received from ESP32
-volatile uint16_t g_humi_exceeded  = 0;  // received from ESP32
+volatile uint16_t g_temp_exceeded = 0;  // received from ESP32
+volatile uint16_t g_light_exceeded = 0; // received from ESP32
+volatile uint16_t g_humi_exceeded = 0;  // received from ESP32
 
 /* ================================================================
  *  UART Comms
@@ -86,16 +86,16 @@ void initActiveBuzzer(void) {
   GPIOB->PCOR |= (1 << ACTIVE_BUZZER_PIN);
 }
 
-void activeBuzzerOn(void)  { GPIOB->PSOR |= (1 << ACTIVE_BUZZER_PIN); }
+void activeBuzzerOn(void) { GPIOB->PSOR |= (1 << ACTIVE_BUZZER_PIN); }
 void activeBuzzerOff(void) { GPIOB->PCOR |= (1 << ACTIVE_BUZZER_PIN); }
 
 void initLEDs(void) {
   SIM->SCGC5 |= (SIM_SCGC5_PORTD_MASK | SIM_SCGC5_PORTE_MASK);
 
-  PORTE->PCR[RED_PIN]   &= ~PORT_PCR_MUX_MASK;
-  PORTE->PCR[RED_PIN]   |= PORT_PCR_MUX(1);
-  PORTE->PCR[BLUE_PIN]  &= ~PORT_PCR_MUX_MASK;
-  PORTE->PCR[BLUE_PIN]  |= PORT_PCR_MUX(1);
+  PORTE->PCR[RED_PIN] &= ~PORT_PCR_MUX_MASK;
+  PORTE->PCR[RED_PIN] |= PORT_PCR_MUX(1);
+  PORTE->PCR[BLUE_PIN] &= ~PORT_PCR_MUX_MASK;
+  PORTE->PCR[BLUE_PIN] |= PORT_PCR_MUX(1);
   PORTD->PCR[GREEN_PIN] &= ~PORT_PCR_MUX_MASK;
   PORTD->PCR[GREEN_PIN] |= PORT_PCR_MUX(1);
 
@@ -117,17 +117,29 @@ void initButtons(void) {
 
 void onLED(TLED led) {
   switch (led) {
-    case RED:   GPIOE->PCOR |= (1 << RED_PIN);   break;
-    case GREEN: GPIOD->PCOR |= (1 << GREEN_PIN); break;
-    case BLUE:  GPIOE->PCOR |= (1 << BLUE_PIN);  break;
+  case RED:
+    GPIOE->PCOR |= (1 << RED_PIN);
+    break;
+  case GREEN:
+    GPIOD->PCOR |= (1 << GREEN_PIN);
+    break;
+  case BLUE:
+    GPIOE->PCOR |= (1 << BLUE_PIN);
+    break;
   }
 }
 
 void offLED(TLED led) {
   switch (led) {
-    case RED:   GPIOE->PSOR |= (1 << RED_PIN);   break;
-    case GREEN: GPIOD->PSOR |= (1 << GREEN_PIN); break;
-    case BLUE:  GPIOE->PSOR |= (1 << BLUE_PIN);  break;
+  case RED:
+    GPIOE->PSOR |= (1 << RED_PIN);
+    break;
+  case GREEN:
+    GPIOD->PSOR |= (1 << GREEN_PIN);
+    break;
+  case BLUE:
+    GPIOE->PSOR |= (1 << BLUE_PIN);
+    break;
   }
 }
 
@@ -155,8 +167,8 @@ void initUART2(uint32_t baud_rate) {
   UART2->BDH |= ((sbr >> 8) & UART_BDH_SBR_MASK);
   UART2->BDL = (uint8_t)(sbr & 0xFF);
 
-  UART2->C1 &= ~(UART_C1_LOOPS_MASK | UART_C1_RSRC_MASK |
-                  UART_C1_PE_MASK    | UART_C1_M_MASK);
+  UART2->C1 &= ~(UART_C1_LOOPS_MASK | UART_C1_RSRC_MASK | UART_C1_PE_MASK |
+                 UART_C1_M_MASK);
 
   UART2->C2 |= UART_C2_RIE_MASK | UART_C2_RE_MASK | UART_C2_TE_MASK;
 
@@ -191,7 +203,8 @@ void UART2_FLEXIO_IRQHandler(void) {
       portYIELD_FROM_ISR(hpw);
       recv_ptr = 0;
     }
-    if (recv_ptr >= MAX_MSG_LEN - 1) recv_ptr = 0;
+    if (recv_ptr >= MAX_MSG_LEN - 1)
+      recv_ptr = 0;
   }
 }
 
@@ -290,22 +303,42 @@ static void lcdTask(void *p) {
   while (1) {
     /* ---- show label ---- */
     switch (page) {
-      case 0: SLCD_ShowString("ShOC"); break;
-      case 1: SLCD_ShowString("bOPn"); break;
-      case 2: SLCD_ShowString("HuEX"); break;
-      case 3: SLCD_ShowString("LtEX"); break;
-      case 4: SLCD_ShowString("tEEX"); break;
+    case 0:
+      SLCD_ShowString("ShOC");
+      break;
+    case 1:
+      SLCD_ShowString("bOPn");
+      break;
+    case 2:
+      SLCD_ShowString("HuEX");
+      break;
+    case 3:
+      SLCD_ShowString("LtEX");
+      break;
+    case 4:
+      SLCD_ShowString("tEEX");
+      break;
     }
     vTaskDelay(pdMS_TO_TICKS(1000));
 
     /* ---- show value ---- */
     uint16_t val = 0;
     switch (page) {
-      case 0: val = g_shock_count;    break;
-      case 1: val = g_box_open_count; break;
-      case 2: val = g_humi_exceeded;  break;
-      case 3: val = g_light_exceeded; break;
-      case 4: val = g_temp_exceeded;  break;
+    case 0:
+      val = g_shock_count;
+      break;
+    case 1:
+      val = g_box_open_count;
+      break;
+    case 2:
+      val = g_humi_exceeded;
+      break;
+    case 3:
+      val = g_light_exceeded;
+      break;
+    case 4:
+      val = g_temp_exceeded;
+      break;
     }
     snprintf(buf, 5, "%4u", val);
     SLCD_ShowString(buf);
@@ -340,43 +373,42 @@ void shockTask(void *p) {
 
 /*
  * hallTask — box open/close detection.
- *   Buzzer ONLY sounds when box opens AND run is active.
  */
 void hallTask(void *pvParameters) {
-  TickType_t last_buzzer_time = 0;
+  TickType_t last_time = 0;
   char buffer[MAX_MSG_LEN];
 
   while (1) {
     xSemaphoreTake(hall_sema, portMAX_DELAY);
 
-    if (GPIOA->PDIR & (1 << HALL_PIN)) {
-      /* --- Box opened --- */
-      g_is_box_open = true;
-      g_box_open_count++;
-      PRINTF("Box Opened! Count: %u\r\n", g_box_open_count);
+    TickType_t now = xTaskGetTickCount();
+    if ((now - last_time) > pdMS_TO_TICKS(2000)) {
+      if (GPIOA->PDIR & (1 << HALL_PIN)) {
+        /* --- Box opened --- */
+        g_is_box_open = true;
+        g_box_open_count++;
+        PRINTF("Box Opened! Count: %u\r\n", g_box_open_count);
 
-      sprintf(buffer, "BOX_OPEN:%u\n", g_box_open_count);
-      sendMessage(buffer);
+        sprintf(buffer, "BOX_OPEN:%u\n", g_box_open_count);
+        sendMessage(buffer);
 
-      /* Buzzer only during active run, with debounce */
-      if (g_run_active) {
-        TickType_t now = xTaskGetTickCount();
-        if ((now - last_buzzer_time) > pdMS_TO_TICKS(3000)) {
+        /* Buzzer only during active run */
+        if (g_run_active) {
           activeBuzzerOn();
-          vTaskDelay(pdMS_TO_TICKS(2000));
+          vTaskDelay(pdMS_TO_TICKS(4000));
           activeBuzzerOff();
-          last_buzzer_time = xTaskGetTickCount();
         }
+      } else {
+        /* --- Box closed --- */
+        g_is_box_open = false;
+        PRINTF("Box Closed!\r\n");
+
+        sprintf(buffer, "BOX_CLOSED\n");
+        sendMessage(buffer);
+
+        activeBuzzerOff();
       }
-    } else {
-      /* --- Box closed --- */
-      g_is_box_open = false;
-      PRINTF("Box Closed!\r\n");
-
-      sprintf(buffer, "BOX_CLOSED\n");
-      sendMessage(buffer);
-
-      activeBuzzerOff();
+      last_time = now;
     }
   }
 }
@@ -409,12 +441,12 @@ static void recvTask(void *p) {
 
         if (g_run_active) {
           /* Reset all counters on new run start */
-          g_shock_count    = 0;
+          g_shock_count = 0;
           g_box_open_count = 0;
-          g_temp_exceeded  = 0;
+          g_temp_exceeded = 0;
           g_light_exceeded = 0;
-          g_humi_exceeded  = 0;
-          g_is_box_open    = false;
+          g_humi_exceeded = 0;
+          g_is_box_open = false;
         }
 
       } else if (sscanf(msg.message, "TEXC:%d", &val) == 1) {
@@ -430,9 +462,8 @@ static void recvTask(void *p) {
         PRINTF("Humidity exceeded count: %u\r\n", g_humi_exceeded);
 
       } else if (sscanf(msg.message, "TEMP:%f,HUMI:%f", &f1, &f2) == 2) {
-        PRINTF("Sensor -> Temp: %d.%02d  Humi: %d.%02d\r\n",
-               (int)f1, (int)(f1 * 100) % 100,
-               (int)f2, (int)(f2 * 100) % 100);
+        PRINTF("Sensor -> Temp: %d.%02d  Humi: %d.%02d\r\n", (int)f1,
+               (int)(f1 * 100) % 100, (int)f2, (int)(f2 * 100) % 100);
 
       } else if (sscanf(msg.message, "LIGHT:%d", &val) == 1) {
         PRINTF("Sensor -> Light: %d\r\n", val);
@@ -451,12 +482,12 @@ void resetTask(void *pvParameters) {
   while (1) {
     if (!(GPIOC->PDIR & (1 << SW2_PIN))) {
       PRINTF("Manual Reset via SW2\r\n");
-      g_shock_count    = 0;
+      g_shock_count = 0;
       g_box_open_count = 0;
-      g_temp_exceeded  = 0;
+      g_temp_exceeded = 0;
       g_light_exceeded = 0;
-      g_humi_exceeded  = 0;
-      g_is_box_open    = false;
+      g_humi_exceeded = 0;
+      g_is_box_open = false;
       activeBuzzerOff();
       vTaskDelay(pdMS_TO_TICKS(500)); /* debounce */
     }
@@ -493,20 +524,29 @@ int main(void) {
 
   PRINTF("RTOS Shipment Monitor\r\n");
 
-  queue      = xQueueCreate(QLEN, sizeof(TMessage));
-  hall_sema  = xSemaphoreCreateBinary();
+  queue = xQueueCreate(QLEN, sizeof(TMessage));
+  hall_sema = xSemaphoreCreateBinary();
   shock_sema = xSemaphoreCreateBinary();
 
-  xTaskCreate(shockTask,     "shockTask",     configMINIMAL_STACK_SIZE + 100, NULL, 1, NULL);
-  xTaskCreate(hallTask,      "hallTask",      configMINIMAL_STACK_SIZE + 100, NULL, 1, NULL);
-  xTaskCreate(recvTask,      "recvTask",      configMINIMAL_STACK_SIZE + 100, NULL, 2, NULL);
-  xTaskCreate(lcdTask,       "lcdTask",       configMINIMAL_STACK_SIZE + 100, NULL, 1, NULL);
-  xTaskCreate(indicatorTask, "indicatorTask", configMINIMAL_STACK_SIZE + 100, NULL, 1, NULL);
-  xTaskCreate(resetTask,     "resetTask",     configMINIMAL_STACK_SIZE + 100, NULL, 1, NULL);
+  xTaskCreate(shockTask, "shockTask", configMINIMAL_STACK_SIZE + 100, NULL, 1,
+              NULL);
+  xTaskCreate(hallTask, "hallTask", configMINIMAL_STACK_SIZE + 100, NULL, 1,
+              NULL);
+  xTaskCreate(recvTask, "recvTask", configMINIMAL_STACK_SIZE + 100, NULL, 2,
+              NULL);
+  xTaskCreate(lcdTask, "lcdTask", configMINIMAL_STACK_SIZE + 100, NULL, 1,
+              NULL);
+  xTaskCreate(indicatorTask, "indicatorTask", configMINIMAL_STACK_SIZE + 100,
+              NULL, 1, NULL);
+  xTaskCreate(resetTask, "resetTask", configMINIMAL_STACK_SIZE + 100, NULL, 1,
+              NULL);
 
   vTaskStartScheduler();
 
   volatile static int i = 0;
-  while (1) { i++; __asm volatile("nop"); }
+  while (1) {
+    i++;
+    __asm volatile("nop");
+  }
   return 0;
 }
