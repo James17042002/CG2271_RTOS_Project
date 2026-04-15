@@ -60,7 +60,7 @@ volatile uint16_t g_humi_exceeded = 0;  // received from ESP32
 #define MAX_MSG_LEN 256
 char send_buffer[MAX_MSG_LEN];
 
-#define QLEN 5
+#define QLEN 16
 QueueHandle_t queue;
 
 typedef struct tm {
@@ -73,6 +73,7 @@ typedef struct tm {
 
 SemaphoreHandle_t shock_sema;
 SemaphoreHandle_t hall_sema;
+SemaphoreHandle_t uart_tx_sema; /* taken by sender, given back by ISR when TX done */
 
 /* ================================================================
  *  Peripheral Init
@@ -181,11 +182,13 @@ void UART2_FLEXIO_IRQHandler(void) {
   static int recv_ptr = 0, send_ptr = 0;
   char rx_data;
   static char recv_buffer[MAX_MSG_LEN];
+  BaseType_t hpw = pdFALSE;
 
   if ((UART2->S1 & UART_S1_TDRE_MASK) && (UART2->C2 & UART_C2_TIE_MASK)) {
     if (send_buffer[send_ptr] == '\0') {
       send_ptr = 0;
       UART2->C2 &= ~UART_C2_TIE_MASK;
+      xSemaphoreGiveFromISR(uart_tx_sema, &hpw); /* release slot for next message */
     } else {
       UART2->D = send_buffer[send_ptr++];
     }
@@ -196,21 +199,25 @@ void UART2_FLEXIO_IRQHandler(void) {
     rx_data = UART2->D;
     recv_buffer[recv_ptr++] = rx_data;
     if (rx_data == '\n') {
-      BaseType_t hpw;
       recv_buffer[recv_ptr] = '\0';
       strncpy(msg.message, recv_buffer, MAX_MSG_LEN);
       xQueueSendFromISR(queue, (void *)&msg, &hpw);
-      portYIELD_FROM_ISR(hpw);
       recv_ptr = 0;
     }
     if (recv_ptr >= MAX_MSG_LEN - 1)
       recv_ptr = 0;
   }
+
+  portYIELD_FROM_ISR(hpw);
 }
 
 void sendMessage(char *message) {
-  strncpy(send_buffer, message, MAX_MSG_LEN);
-  UART2->C2 |= UART_C2_TIE_MASK;
+  /* Block until the previous transmission has finished, then claim the buffer */
+  if (xSemaphoreTake(uart_tx_sema, pdMS_TO_TICKS(500)) == pdTRUE) {
+    strncpy(send_buffer, message, MAX_MSG_LEN);
+    UART2->C2 |= UART_C2_TIE_MASK;
+    /* uart_tx_sema given back by ISR once the last byte is sent */
+  }
 }
 
 /* ================================================================
@@ -289,56 +296,58 @@ static void indicatorTask(void *p) {
 /*
  * lcdTask — rotates through 5 pages on the 4-digit SLCD
  *   Page 0: ShOC / <shock count>
- *   Page 1: bOPn / <box open count>
- *   Page 2: HuEX / <humidity exceeded count>
- *   Page 3: LtEX / <light exceeded count>
- *   Page 4: tEEX / <temperature exceeded count>
+ *   Page 1: OPEn / <box open count>
+ *   Page 2: HuEd / <humidity exceeded count>
+ *   Page 3: LtEd / <light exceeded count>
+ *   Page 4: tEEd / <temperature exceeded count>
  *
  *   Shows label for 1 s, then numeric value for 1.5 s.
  */
 static void lcdTask(void *p) {
   uint8_t page = 0;
   char buf[5];
+  bool prev_active = false;
+
+  /* Snapshot of counters — frozen when run ends */
+  uint16_t snap_shock = 0;
+  uint16_t snap_box_open = 0;
+  uint16_t snap_humi = 0;
+  uint16_t snap_light = 0;
+  uint16_t snap_temp = 0;
 
   while (1) {
+    if (g_run_active) {
+      /* Live — read directly from globals */
+      snap_shock = g_shock_count;
+      snap_box_open = g_box_open_count;
+      snap_humi = g_humi_exceeded;
+      snap_light = g_light_exceeded;
+      snap_temp = g_temp_exceeded;
+      prev_active = true;
+    } else if (prev_active) {
+      /* Just ended — snapshot is already frozen from last loop */
+      prev_active = false;
+    }
+    /* else: idle — snapshots stay as they were */
+
     /* ---- show label ---- */
     switch (page) {
-    case 0:
-      SLCD_ShowString("Shoc");
-      break;
-    case 1:
-      SLCD_ShowString("BoOp");
-      break;
-    case 2:
-      SLCD_ShowString("HuEX");
-      break;
-    case 3:
-      SLCD_ShowString("LtEX");
-      break;
-    case 4:
-      SLCD_ShowString("TpEX");
-      break;
+    case 0: SLCD_ShowString("Shoc"); break;
+    case 1: SLCD_ShowString("OPEn"); break;
+    case 2: SLCD_ShowString("HuEd"); break;
+    case 3: SLCD_ShowString("LtEd"); break;
+    case 4: SLCD_ShowString("tPEd"); break;
     }
     vTaskDelay(pdMS_TO_TICKS(1000));
 
     /* ---- show value ---- */
     uint16_t val = 0;
     switch (page) {
-    case 0:
-      val = g_shock_count;
-      break;
-    case 1:
-      val = g_box_open_count;
-      break;
-    case 2:
-      val = g_humi_exceeded;
-      break;
-    case 3:
-      val = g_light_exceeded;
-      break;
-    case 4:
-      val = g_temp_exceeded;
-      break;
+    case 0: val = snap_shock;    break;
+    case 1: val = snap_box_open; break;
+    case 2: val = snap_humi;     break;
+    case 3: val = snap_light;    break;
+    case 4: val = snap_temp;     break;
     }
     snprintf(buf, 5, "%4u", val);
     SLCD_ShowString(buf);
@@ -360,7 +369,9 @@ void shockTask(void *p) {
 
     TickType_t now = xTaskGetTickCount();
     if ((now - last_time) > pdMS_TO_TICKS(500)) {
-      g_shock_count++;
+      if (g_run_active) {
+        g_shock_count++;
+      }
       PRINTF("Shock Detected! Count: %u\r\n", g_shock_count);
 
       sprintf(buffer, "SHOCK:%u\n", g_shock_count);
@@ -400,7 +411,9 @@ void hallTask(void *pvParameters) {
       g_is_box_open = is_open;
 
       if (is_open) {
-        g_box_open_count++;
+        if (g_run_active) {
+          g_box_open_count++;
+        }
         PRINTF("Box Opened! Count: %u\r\n", g_box_open_count);
         sprintf(buffer, "BOX_OPEN:%u\n", g_box_open_count);
         sendMessage(buffer);
@@ -473,11 +486,17 @@ static void recvTask(void *p) {
     	        PRINTF("New run started — counters reset\r\n");
     	    }
 
-    	    if (!new_state && g_run_active) {
-    	        /* Transition to idle — silence buzzer */
-    	        activeBuzzerOff();
-    	    }
-
+          if (!new_state && g_run_active) {
+              /* Transition to idle — silence buzzer and reset counters */
+              activeBuzzerOff();
+              g_shock_count = 0;
+              g_box_open_count = 0;
+              g_temp_exceeded = 0;
+              g_light_exceeded = 0;
+              g_humi_exceeded = 0;
+              PRINTF("Run ended — counters reset\r\n");
+          }
+          
     	    g_run_active = new_state;
     	    PRINTF("Run state: %s\r\n", g_run_active ? "ACTIVE" : "IDLE");
 
@@ -561,6 +580,8 @@ int main(void) {
   queue = xQueueCreate(QLEN, sizeof(TMessage));
   hall_sema = xSemaphoreCreateBinary();
   shock_sema = xSemaphoreCreateBinary();
+  uart_tx_sema = xSemaphoreCreateBinary();
+  xSemaphoreGive(uart_tx_sema); /* pre-load one token — ready to send immediately */
 
   xTaskCreate(shockTask, "shockTask", configMINIMAL_STACK_SIZE + 100, NULL, 1,
               NULL);

@@ -50,6 +50,9 @@ struct ShipmentData {
   float lng = 0;
   int shockCount = 0;
   int boxOpenCount = 0;
+  uint16_t tempExceededCount = 0;
+  uint16_t humiExceededCount = 0;
+  uint16_t lightExceededCount = 0;
   char status[64] = "Initialized";
 } currentShipment;
 
@@ -65,11 +68,8 @@ volatile bool mcuNotifyState = false;
 // Thresholds from Firebase run_config
 float tempThreshold = 50.0;
 float humiThreshold = 90.0;
-int lightThreshold = 400;
+int lightThreshold = 3000;
 
-uint16_t tempExceededCount = 0;
-uint16_t humiExceededCount = 0;
-uint16_t lightExceededCount = 0;
 
 DHT dht(DHTPIN, DHTTYPE);
 
@@ -150,7 +150,7 @@ void TaskWiFiManager(void *pvParameters) {
     }
 
     // Check status and memory every 5 seconds
-    Serial.printf("[SYSTEM] Free Heap: %u bytes\n", ESP.getFreeHeap());
+    // Serial.printf("[SYSTEM] Free Heap: %u bytes\n", ESP.getFreeHeap());
     vTaskDelay(pdMS_TO_TICKS(5000));
   }
 }
@@ -160,44 +160,50 @@ void TaskTempHumid(void *pvParameters) {
     float h = dht.readHumidity();
     float t = dht.readTemperature();
 
-    // Add temp and hum readings to Shipment Data
+    uint16_t texc = 0, hexc = 0;
+    bool tempAlert = false, humiAlert = false;
+
     if (xSemaphoreTake(dataMutex, portMAX_DELAY)) {
       if (!isnan(h) && !isnan(t)) {
         currentShipment.temp = t;
         currentShipment.hum = h;
+        if (isActiveRun) {
+          if (t > tempThreshold) {
+            currentShipment.tempExceededCount++;
+            texc = currentShipment.tempExceededCount;
+            tempAlert = true;
+          }
+          if (h > humiThreshold) {
+            currentShipment.humiExceededCount++;
+            hexc = currentShipment.humiExceededCount;
+            humiAlert = true;
+          }
+        }
       }
       xSemaphoreGive(dataMutex);
     }
 
-    /* --- Threshold Checks (Only during isActiveRun) --- */
-    if (isActiveRun && !isnan(h) && !isnan(t)) {
-      if (t > tempThreshold) {
-        tempExceededCount++;
-        Serial.printf("[THRESH] Temp %.2f > %.2f (count=%u)\n", t,
-                      tempThreshold, tempExceededCount);
-        if (xSemaphoreTake(uartMutex, portMAX_DELAY)) {
-          Serial1.printf("TEXC:%u\n", tempExceededCount);
-          xSemaphoreGive(uartMutex);
-        }
+    if (tempAlert) {
+      Serial.printf("[THRESH] Temp %.2f > %.2f (count=%u)\n", t, tempThreshold, texc);
+      if (xSemaphoreTake(uartMutex, portMAX_DELAY)) {
+        Serial1.printf("TEXC:%u\n", texc);
+        xSemaphoreGive(uartMutex);
       }
-      if (h > humiThreshold) {
-        humiExceededCount++;
-        Serial.printf("[THRESH] Humi %.2f > %.2f (count=%u)\n", h,
-                      humiThreshold, humiExceededCount);
-        if (xSemaphoreTake(uartMutex, portMAX_DELAY)) {
-          Serial1.printf("HEXC:%u\n", humiExceededCount);
-          xSemaphoreGive(uartMutex);
-        }
+    }
+    if (humiAlert) {
+      Serial.printf("[THRESH] Humi %.2f > %.2f (count=%u)\n", h, humiThreshold, hexc);
+      if (xSemaphoreTake(uartMutex, portMAX_DELAY)) {
+        Serial1.printf("HEXC:%u\n", hexc);
+        xSemaphoreGive(uartMutex);
       }
     }
 
-    // Also send short status to MCXC444 as per original requirement
     if (xSemaphoreTake(uartMutex, portMAX_DELAY)) {
       if (!isnan(h) && !isnan(t)) {
         Serial1.printf("TEMP:%.2f,HUMI:%.2f\n", t, h);
-        Serial.printf("[ENV] UART Sent: T:%.2f H:%.2f\n", t, h);
+        //Serial.printf("[ENV] UART Sent: T:%.2f H:%.2f\n", t, h);
       }
-      xSemaphoreGive(uartMutex); // Release resource
+      xSemaphoreGive(uartMutex);
     }
 
     vTaskDelay(pdMS_TO_TICKS(2000));
@@ -206,35 +212,37 @@ void TaskTempHumid(void *pvParameters) {
 
 void TaskPhotoresistor(void *pvParameters) {
   for (;;) {
-    int lightValue = analogRead(LDR_PIN);
+    int rawValue = analogRead(LDR_PIN);
+    int lightValue = 4095 - rawValue;
 
-    // Add light value readings to Shipment data
+    uint16_t lexc = 0;
+    bool lightAlert = false;
+
     if (xSemaphoreTake(dataMutex, portMAX_DELAY)) {
       currentShipment.light = lightValue;
+      if (isActiveRun && lightValue > lightThreshold) {
+        currentShipment.lightExceededCount++;
+        lexc = currentShipment.lightExceededCount;
+        lightAlert = true;
+      }
       xSemaphoreGive(dataMutex);
     }
 
-    /* --- Threshold Check (Only during isActiveRun) --- */
-    if (isActiveRun) {
-      if (lightValue < lightThreshold) {
-        lightExceededCount++;
-        Serial.printf("[THRESH] Light %d < %d (count=%u)\n", lightValue,
-                      lightThreshold, lightExceededCount);
-        if (xSemaphoreTake(uartMutex, portMAX_DELAY)) {
-          Serial1.printf("LEXC:%u\n", lightExceededCount);
-          xSemaphoreGive(uartMutex);
-        }
+    if (lightAlert) {
+      Serial.printf("[THRESH] Light %d > %d (count=%u)\n", lightValue, lightThreshold, lexc);
+      if (xSemaphoreTake(uartMutex, portMAX_DELAY)) {
+        Serial1.printf("LEXC:%u\n", lexc);
+        xSemaphoreGive(uartMutex);
       }
     }
 
-    // Lock UART resource before printing
     if (xSemaphoreTake(uartMutex, portMAX_DELAY)) {
       Serial1.printf("LIGHT:%d\n", lightValue);
-      Serial.printf("[SEC] UART Sent: L:%d\n", lightValue);
-      xSemaphoreGive(uartMutex); // Release resource
+      // Serial.printf("[SEC] UART Sent: L:%d\n", lightValue);
+      xSemaphoreGive(uartMutex);
     }
 
-    vTaskDelay(pdMS_TO_TICKS(500));
+    vTaskDelay(pdMS_TO_TICKS(2000));
   }
 }
 
@@ -324,8 +332,8 @@ void TaskFirebase(void *pvParameters) {
       lastPoll = now;
     }
 
-    // 2. Push Shipment Logs (Every 15 seconds, only if active)
-    if (now - lastPush >= 15000) {
+    // 2. Push Shipment Logs (Every 30 seconds, only if active)
+    if (now - lastPush >= 30000) {
       if (app.ready() && isActiveRun) {
         StaticJsonDocument<512> doc;
 
@@ -338,13 +346,19 @@ void TaskFirebase(void *pvParameters) {
           json.add("longitude", currentShipment.lng);
           json.add("shocks", currentShipment.shockCount);
           json.add("box_opens", currentShipment.boxOpenCount);
+          json.add("temp_exceeded", currentShipment.tempExceededCount);
+          json.add("humi_exceeded", currentShipment.humiExceededCount);
+          json.add("light_exceeded", currentShipment.lightExceededCount);
           json.add("event_status", currentShipment.status);
-          json.set("ts/.sv", "timestamp");
+          FirebaseJson tsObj;
+          tsObj.add(".sv", "timestamp");
+          json.add("ts", tsObj);
           xSemaphoreGive(dataMutex);
         }
 
         jsonStr = "";
         json.toString(jsonStr);
+        Serial.printf("[CLOUD] Payload: %s\n", jsonStr.c_str());
         
         if (jsonStr.length() > 0 && jsonStr != "{}") {
           object_t payload(jsonStr); 
@@ -383,7 +397,7 @@ void TaskFirebase(void *pvParameters) {
       lastPush = now;
     }
 
-    vTaskDelay(pdMS_TO_TICKS(1000)); // Sleep for 1s between checks
+    vTaskDelay(pdMS_TO_TICKS(5000)); // Sleep for 1s between checks
   }
 }
 
@@ -464,13 +478,12 @@ void processData(AsyncResult &aResult) {
       if (isActiveRun && !prevRunState) {
         Serial.println("[SYSTEM] Run start detected signal...");
         
-        // Reset counters for the new run
-        tempExceededCount = 0;
-        humiExceededCount = 0;
-        lightExceededCount = 0;
         if (xSemaphoreTake(dataMutex, portMAX_DELAY)) {
           currentShipment.shockCount = 0;
           currentShipment.boxOpenCount = 0;
+          currentShipment.tempExceededCount = 0;
+          currentShipment.humiExceededCount = 0;
+          currentShipment.lightExceededCount = 0;
           xSemaphoreGive(dataMutex);
         }
 

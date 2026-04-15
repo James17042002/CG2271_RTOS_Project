@@ -70,40 +70,87 @@ typedef struct { uint8_t lo; uint8_t hi; } seg_t;
 
 static seg_t char_to_seg(char c)
 {
-    /*                     A B C D E F G                             */
+    /*  7-segment layout:
+     *        _A_
+     *       |F |B
+     *        _G_
+     *       |E |C
+     *        _D_   .DP
+     *
+     *  lo pin: bit0=D  bit1=E  bit2=G  bit3=F
+     *  hi pin: bit0=DP bit1=C  bit2=B  bit3=A
+     */
     switch (c) {
-    case '0': case 'O': return (seg_t){ 0x0B, 0x0E }; /* 1 1 1 1 1 1 0 */
-    case '1':           return (seg_t){ 0x00, 0x06 }; /* 0 1 1 0 0 0 0 */
-    case '2':           return (seg_t){ 0x07, 0x0A }; /* 1 1 0 1 1 0 1 */
-    case '3':           return (seg_t){ 0x05, 0x0E }; /* 1 1 1 1 0 0 1 */
-    case '4':           return (seg_t){ 0x0C, 0x06 }; /* 0 1 1 0 0 1 1 */
-    case '5': case 'S': return (seg_t){ 0x0D, 0x0A }; /* 1 0 1 1 0 1 1 */
-    case '6': case 'G': return (seg_t){ 0x0F, 0x0A }; /* 1 0 1 1 1 1 1 */
-    case '7':           return (seg_t){ 0x00, 0x0E }; /* 1 1 1 0 0 0 0 */
-    case '8':           return (seg_t){ 0x0F, 0x0E }; /* 1 1 1 1 1 1 1 */
-    case '9':           return (seg_t){ 0x0D, 0x0E }; /* 1 1 1 1 0 1 1 */
-    case 'A':           return (seg_t){ 0x0E, 0x0E }; /* 1 1 1 0 1 1 1 */
-    case 'b':           return (seg_t){ 0x0F, 0x02 }; /* 0 0 1 1 1 1 1 */
-    case 'C':           return (seg_t){ 0x0B, 0x08 }; /* 1 0 0 1 1 1 0 */
-    case 'c':           return (seg_t){ 0x07, 0x00 }; /* 0 0 0 1 1 0 1 */
-    case 'd':           return (seg_t){ 0x07, 0x06 }; /* 0 1 1 1 1 0 1 */
-    case 'E':           return (seg_t){ 0x0F, 0x08 }; /* 1 0 0 1 1 1 1 */
-    case 'F':           return (seg_t){ 0x0E, 0x08 }; /* 1 0 0 0 1 1 1 */
-    case 'H':           return (seg_t){ 0x0E, 0x06 }; /* 0 1 1 0 1 1 1 */
-    case 'h':           return (seg_t){ 0x0E, 0x02 }; /* 0 0 1 0 1 1 1 */
-    case 'I':           return (seg_t){ 0x0A, 0x00 }; /* 0 0 0 0 1 1 0 */
-    case 'J':           return (seg_t){ 0x03, 0x06 }; /* 0 1 1 1 0 0 0 */
-    case 'L':           return (seg_t){ 0x0B, 0x00 }; /* 0 0 0 1 1 1 0 */
-    case 'n':           return (seg_t){ 0x06, 0x02 }; /* 0 0 1 0 1 0 1 */
-    case 'o':           return (seg_t){ 0x07, 0x02 }; /* 0 0 1 1 1 0 1 */
-    case 'P':           return (seg_t){ 0x0E, 0x0C }; /* 1 1 0 0 1 1 1 */
-    case 'r':           return (seg_t){ 0x06, 0x00 }; /* 0 0 0 0 1 0 1 */
-    case 't':           return (seg_t){ 0x0F, 0x00 }; /* 0 0 0 1 1 1 1 */
-    case 'U':           return (seg_t){ 0x0B, 0x06 }; /* 0 1 1 1 1 1 0 */
-    case 'u':           return (seg_t){ 0x03, 0x02 }; /* 0 0 1 1 1 0 0 */
-    case 'Y':           return (seg_t){ 0x0D, 0x06 }; /* 0 1 1 0 0 1 1 */
-    case '-':           return (seg_t){ 0x04, 0x00 }; /* 0 0 0 0 0 0 1 */
-    default:            return (seg_t){ 0x00, 0x00 }; /* blank           */
+    /* ---- Digits ---- */
+    case '0':           return (seg_t){ 0x0B, 0x0E }; /* A B C D E F   */
+    case '1':           return (seg_t){ 0x00, 0x06 }; /*   B C         */
+    case '2':           return (seg_t){ 0x07, 0x0C }; /* A B   D E   G */
+    case '3':           return (seg_t){ 0x05, 0x0E }; /* A B C D     G */
+    case '4':           return (seg_t){ 0x0C, 0x06 }; /*   B C     F G */
+    case 'S': case 's': case '5': return (seg_t){ 0x0D, 0x0A }; /* A C D F G */
+    case '6':           return (seg_t){ 0x0F, 0x0A }; /* A   C D E F G */
+    case '7':           return (seg_t){ 0x00, 0x0E }; /* A B C         */
+    case '8':           return (seg_t){ 0x0F, 0x0E }; /* A B C D E F G */
+    case '9':           return (seg_t){ 0x0D, 0x0E }; /* A B C D   F G */
+
+    /* ---- Uppercase ---- */
+    case 'A':           return (seg_t){ 0x0E, 0x0E }; /* A B C   E F G */
+    case 'B':           return (seg_t){ 0x0F, 0x02 }; /*     C D E F G */ /* same as b */
+    case 'C':           return (seg_t){ 0x0B, 0x08 }; /* A     D E F   */
+    case 'D':           return (seg_t){ 0x07, 0x06 }; /*   B C D E   G */ /* same as d */
+    case 'E':           return (seg_t){ 0x0F, 0x08 }; /* A     D E F G */
+    case 'F':           return (seg_t){ 0x0E, 0x08 }; /* A       E F G */
+    case 'G':           return (seg_t){ 0x0F, 0x0C }; /* A   C D E F   */ /* same as 6 */
+    case 'H':           return (seg_t){ 0x0E, 0x06 }; /*   B C   E F G */
+    case 'I':           return (seg_t){ 0x0A, 0x00 }; /*         E F   */
+    case 'J':           return (seg_t){ 0x03, 0x06 }; /*   B C D       */
+    case 'K':           return (seg_t){ 0x0E, 0x08 }; /* A       E F G */ /* approx, like F */
+    case 'L':           return (seg_t){ 0x0B, 0x00 }; /*       D E F   */
+    case 'M':           return (seg_t){ 0x0A, 0x0E }; /* A B C   E F   */ /* approx */
+    case 'N':           return (seg_t){ 0x06, 0x02 }; /*     C   E   G */ /* same as n */
+    case 'O':           return (seg_t){ 0x0B, 0x0E }; /* A B C D E F   */ /* same as 0 */
+    case 'P': case 'p': return (seg_t){ 0x0E, 0x0C }; /* A B   E F G */
+    case 'Q':           return (seg_t){ 0x0C, 0x0E }; /* A B C     F G */ /* like 9 top */
+    case 'R':           return (seg_t){ 0x06, 0x00 }; /*         E   G */ /* same as r */
+    case 'T':           return (seg_t){ 0x0F, 0x00 }; /*       D E F G */ /* same as t */
+    case 'U':           return (seg_t){ 0x0B, 0x06 }; /*   B C D E F   */
+    case 'V':           return (seg_t){ 0x0B, 0x06 }; /*   B C D E F   */ /* same as U */
+    case 'W':           return (seg_t){ 0x0B, 0x06 }; /*   B C D E F   */ /* approx */
+    case 'X':           return (seg_t){ 0x0E, 0x06 }; /*   B C   E F G */ /* same as H */
+    case 'Y':           return (seg_t){ 0x0D, 0x06 }; /*   B C     F G */ /* like 4+D */
+    case 'Z':           return (seg_t){ 0x07, 0x0A }; /* A B   D E   G */ /* same as 2 */
+
+    /* ---- Lowercase ---- */
+    case 'a':           return (seg_t){ 0x07, 0x0E }; /* A B C D E   G */
+    case 'b':           return (seg_t){ 0x0F, 0x02 }; /*     C D E F G */
+    case 'c':           return (seg_t){ 0x07, 0x00 }; /*       D E   G */
+    case 'd':           return (seg_t){ 0x07, 0x06 }; /*   B C D E   G */
+    case 'e':           return (seg_t){ 0x0F, 0x0A }; /* A B   D E F G */
+    case 'f':           return (seg_t){ 0x0E, 0x08 }; /* A       E F G */ /* same as F */
+    case 'g':           return (seg_t){ 0x0D, 0x0E }; /* A B C D   F G */ /* same as 9 */
+    case 'h':           return (seg_t){ 0x0E, 0x02 }; /*     C   E F G */
+    case 'i':           return (seg_t){ 0x00, 0x02 }; /*     C         */
+    case 'j':           return (seg_t){ 0x03, 0x06 }; /*   B C D       */ /* same as J */
+    case 'k':           return (seg_t){ 0x0E, 0x08 }; /* A       E F G */ /* approx */
+    case 'l':           return (seg_t){ 0x0A, 0x00 }; /*         E F   */ /* same as I */
+    case 'm':           return (seg_t){ 0x06, 0x02 }; /*     C   E   G */ /* approx */
+    case 'n':           return (seg_t){ 0x06, 0x02 }; /*     C   E   G */
+    case 'o':           return (seg_t){ 0x07, 0x02 }; /*     C D E   G */
+    case 'q':           return (seg_t){ 0x0C, 0x0E }; /* A B C     F G */
+    case 'r':           return (seg_t){ 0x06, 0x00 }; /*         E   G */
+    case 't':           return (seg_t){ 0x0F, 0x00 }; /*       D E F G */
+    case 'u':           return (seg_t){ 0x03, 0x02 }; /*     C D E     */
+    case 'v':           return (seg_t){ 0x03, 0x02 }; /*     C D E     */ /* same as u */
+    case 'w':           return (seg_t){ 0x03, 0x02 }; /*     C D E     */ /* approx */
+    case 'x':           return (seg_t){ 0x0E, 0x06 }; /*   B C   E F G */ /* same as H */
+    case 'y':           return (seg_t){ 0x0D, 0x06 }; /*   B C     F G */
+    case 'z':           return (seg_t){ 0x07, 0x0A }; /* A B   D E   G */ /* same as 2 */
+
+    /* ---- Symbols ---- */
+    case '-':           return (seg_t){ 0x04, 0x00 }; /*             G */
+    case '_':           return (seg_t){ 0x01, 0x00 }; /*       D       */
+    case ' ':           return (seg_t){ 0x00, 0x00 }; /* blank         */
+    default:            return (seg_t){ 0x00, 0x00 }; /* blank         */
     }
 }
 
