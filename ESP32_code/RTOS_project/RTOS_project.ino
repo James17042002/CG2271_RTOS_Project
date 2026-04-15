@@ -5,7 +5,7 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <FirebaseClient.h>
-#include <FirebaseJson.h>
+#include <ArduinoJson.h>
 #include <HTTPClient.h> // Added for GeoLocation
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
@@ -327,12 +327,10 @@ void TaskFirebase(void *pvParameters) {
     // 2. Push Shipment Logs (Every 15 seconds, only if active)
     if (now - lastPush >= 15000) {
       if (app.ready() && isActiveRun) {
-        static FirebaseJson json;
-        static String jsonStr;
-
-        json.clear();
+        StaticJsonDocument<512> doc;
 
         if (xSemaphoreTake(dataMutex, portMAX_DELAY)) {
+<<<<<<< Updated upstream
           json.add("temperature", currentShipment.temp);
           json.add("humidity", currentShipment.hum);
           json.add("light_level", currentShipment.light);
@@ -350,7 +348,29 @@ void TaskFirebase(void *pvParameters) {
         
         if (jsonStr.length() > 0 && jsonStr != "{}") {
           object_t payload(jsonStr); 
+=======
+          doc["temperature"] = currentShipment.temp;
+          doc["humidity"] = currentShipment.hum;
+          doc["light_level"] = currentShipment.light;
+          doc["latitude"] = currentShipment.lat;
+          doc["longitude"] = currentShipment.lng;
+          doc["shocks"] = currentShipment.shockCount;
+          doc["box_opens"] = currentShipment.boxOpenCount;
+          doc["temp_exceeded"] = currentShipment.tempExceededCount;
+          doc["humi_exceeded"] = currentShipment.humiExceededCount;
+          doc["light_exceeded"] = currentShipment.lightExceededCount;
+          doc["event_status"] = currentShipment.status;
+          doc["ts"][".sv"] = "timestamp";
+          xSemaphoreGive(dataMutex);
+        }
 
+        String jsonStr;
+        serializeJson(doc, jsonStr);
+        Serial.printf("[CLOUD] Payload: %s\n", jsonStr.c_str());
+>>>>>>> Stashed changes
+
+        if (jsonStr.length() > 2) {
+          object_t payload(jsonStr);
           Serial.println("[CLOUD] Attempt to Push Log...");
           if (xSemaphoreTake(firebaseMutex, portMAX_DELAY)) {
             Database.push(aClient, "/shipment_logs", payload, processData);
