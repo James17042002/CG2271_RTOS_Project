@@ -304,10 +304,10 @@ static void lcdTask(void *p) {
     /* ---- show label ---- */
     switch (page) {
     case 0:
-      SLCD_ShowString("ShOC");
+      SLCD_ShowString("Shoc");
       break;
     case 1:
-      SLCD_ShowString("bOPn");
+      SLCD_ShowString("BoOp");
       break;
     case 2:
       SLCD_ShowString("HuEX");
@@ -316,7 +316,7 @@ static void lcdTask(void *p) {
       SLCD_ShowString("LtEX");
       break;
     case 4:
-      SLCD_ShowString("tEEX");
+      SLCD_ShowString("TpEX");
       break;
     }
     vTaskDelay(pdMS_TO_TICKS(1000));
@@ -375,41 +375,70 @@ void shockTask(void *p) {
  * hallTask — box open/close detection.
  */
 void hallTask(void *pvParameters) {
-  TickType_t last_time = 0;
   char buffer[MAX_MSG_LEN];
+  /* Read the actual pin to seed — HIGH = open, LOW = closed */
+  bool prev_open = (GPIOA->PDIR & (1 << HALL_PIN)) != 0;
+  g_is_box_open = prev_open;
 
   while (1) {
     xSemaphoreTake(hall_sema, portMAX_DELAY);
 
-    TickType_t now = xTaskGetTickCount();
-    if ((now - last_time) > pdMS_TO_TICKS(2000)) {
-      if (GPIOA->PDIR & (1 << HALL_PIN)) {
-        /* --- Box opened --- */
-        g_is_box_open = true;
+    /* Short debounce — let pin settle */
+    vTaskDelay(pdMS_TO_TICKS(80));
+
+    /* Drain any extra semaphore gives from bouncing */
+    while (xSemaphoreTake(hall_sema, 0) == pdTRUE) { }
+
+    /* === ALWAYS READ THE ACTUAL PIN STATE === */
+    /* KY-003: LOW = LED on = magnet close = closed */
+    /* KY-003: HIGH = LED off = magnet away = open  */
+    bool is_open = (GPIOA->PDIR & (1 << HALL_PIN)) != 0;
+
+    /* Only act on real state change */
+    if (is_open != prev_open) {
+      prev_open = is_open;
+      g_is_box_open = is_open;
+
+      if (is_open) {
         g_box_open_count++;
         PRINTF("Box Opened! Count: %u\r\n", g_box_open_count);
-
         sprintf(buffer, "BOX_OPEN:%u\n", g_box_open_count);
         sendMessage(buffer);
-
-        /* Buzzer only during active run */
-        if (g_run_active) {
-          activeBuzzerOn();
-          vTaskDelay(pdMS_TO_TICKS(4000));
-          activeBuzzerOff();
-        }
       } else {
-        /* --- Box closed --- */
-        g_is_box_open = false;
         PRINTF("Box Closed!\r\n");
-
         sprintf(buffer, "BOX_CLOSED\n");
         sendMessage(buffer);
-
         activeBuzzerOff();
       }
-      last_time = now;
     }
+  }
+}
+
+/*
+ * buzzerTask — sounds buzzer for up to 4 s when box is open during a run.
+ *   Stops immediately when box closes or run ends.
+ */
+static void buzzerTask(void *p) {
+  TickType_t buzz_start = 0;
+  bool buzzing = false;
+
+  while (1) {
+    if (g_is_box_open && g_run_active) {
+      if (!buzzing) {
+        activeBuzzerOn();
+        buzz_start = xTaskGetTickCount();
+        buzzing = true;
+      } else if ((xTaskGetTickCount() - buzz_start) >= pdMS_TO_TICKS(4000)) {
+        activeBuzzerOff();
+        buzzing = false;
+      }
+    } else {
+      if (buzzing) {
+        activeBuzzerOff();
+        buzzing = false;
+      }
+    }
+    vTaskDelay(pdMS_TO_TICKS(100));
   }
 }
 
@@ -429,27 +458,30 @@ static void recvTask(void *p) {
   while (1) {
     TMessage msg;
     if (xQueueReceive(queue, &msg, portMAX_DELAY) == pdTRUE) {
+    	if (sscanf(msg.message, "RUN:%d", &val) == 1) {
+    	    bool new_state = (val == 1);
 
-      if (sscanf(msg.message, "RUN:%d", &val) == 1) {
-        g_run_active = (val == 1);
-        PRINTF("Run state: %s\r\n", g_run_active ? "ACTIVE" : "IDLE");
+    	    /* Only reset on the rising edge: was idle, now active */
+    	    if (new_state && !g_run_active) {
+    	        g_shock_count = 0;
+    	        g_box_open_count = 0;
+    	        g_temp_exceeded = 0;
+    	        g_light_exceeded = 0;
+    	        g_humi_exceeded = 0;
+    	        /* Re-read the ACTUAL pin instead of forcing false */
+    	        g_is_box_open = (GPIOA->PDIR & (1 << HALL_PIN)) != 0;
+    	        PRINTF("New run started — counters reset\r\n");
+    	    }
 
-        if (!g_run_active) {
-          /* Silence buzzer immediately when run ends */
-          activeBuzzerOff();
-        }
+    	    if (!new_state && g_run_active) {
+    	        /* Transition to idle — silence buzzer */
+    	        activeBuzzerOff();
+    	    }
 
-        if (g_run_active) {
-          /* Reset all counters on new run start */
-          g_shock_count = 0;
-          g_box_open_count = 0;
-          g_temp_exceeded = 0;
-          g_light_exceeded = 0;
-          g_humi_exceeded = 0;
-          g_is_box_open = false;
-        }
+    	    g_run_active = new_state;
+    	    PRINTF("Run state: %s\r\n", g_run_active ? "ACTIVE" : "IDLE");
 
-      } else if (sscanf(msg.message, "TEXC:%d", &val) == 1) {
+    	} else if (sscanf(msg.message, "TEXC:%d", &val) == 1) {
         g_temp_exceeded = (uint16_t)val;
         PRINTF("Temp exceeded count: %u\r\n", g_temp_exceeded);
 
@@ -515,6 +547,8 @@ int main(void) {
   initActiveBuzzer();
   activeBuzzerOff();
   initIRQ();
+  /* KY-003: HIGH = no magnet = open,  LOW = magnet = closed */
+  g_is_box_open = (GPIOA->PDIR & (1 << HALL_PIN)) != 0;
   initButtons();
   initUART2(BAUD_RATE);
 
@@ -538,6 +572,8 @@ int main(void) {
               NULL);
   xTaskCreate(indicatorTask, "indicatorTask", configMINIMAL_STACK_SIZE + 100,
               NULL, 1, NULL);
+  xTaskCreate(buzzerTask, "buzzerTask", configMINIMAL_STACK_SIZE + 100, NULL,
+              1, NULL);
   xTaskCreate(resetTask, "resetTask", configMINIMAL_STACK_SIZE + 100, NULL, 1,
               NULL);
 

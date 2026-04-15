@@ -16,8 +16,8 @@
 #define LDR_PIN 5
 
 // Wi-Fi Configuration
-#define WIFI_SSID "JamesPhone"
-#define WIFI_PASS "sickening123"
+#define WIFI_SSID "Ian"
+#define WIFI_PASS "ianchootz"
 
 // Firebase Project Configuration
 #define Web_API_KEY "AIzaSyCODz9_kjBFIPd3h9uDQAtDx_IEcKxqpjQ" // API Key
@@ -216,9 +216,9 @@ void TaskPhotoresistor(void *pvParameters) {
 
     /* --- Threshold Check (Only during isActiveRun) --- */
     if (isActiveRun) {
-      if (lightValue > lightThreshold) {
+      if (lightValue < lightThreshold) {
         lightExceededCount++;
-        Serial.printf("[THRESH] Light %d > %d (count=%u)\n", lightValue,
+        Serial.printf("[THRESH] Light %d < %d (count=%u)\n", lightValue,
                       lightThreshold, lightExceededCount);
         if (xSemaphoreTake(uartMutex, portMAX_DELAY)) {
           Serial1.printf("LEXC:%u\n", lightExceededCount);
