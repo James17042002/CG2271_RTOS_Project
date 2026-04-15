@@ -338,31 +338,6 @@ void TaskFirebase(void *pvParameters) {
         StaticJsonDocument<512> doc;
 
         if (xSemaphoreTake(dataMutex, portMAX_DELAY)) {
-<<<<<<< Updated upstream
-          json.add("temperature", currentShipment.temp);
-          json.add("humidity", currentShipment.hum);
-          json.add("light_level", currentShipment.light);
-          json.add("latitude", currentShipment.lat);
-          json.add("longitude", currentShipment.lng);
-          json.add("shocks", currentShipment.shockCount);
-          json.add("box_opens", currentShipment.boxOpenCount);
-          json.add("temp_exceeded", currentShipment.tempExceededCount);
-          json.add("humi_exceeded", currentShipment.humiExceededCount);
-          json.add("light_exceeded", currentShipment.lightExceededCount);
-          json.add("event_status", currentShipment.status);
-          FirebaseJson tsObj;
-          tsObj.add(".sv", "timestamp");
-          json.add("ts", tsObj);
-          xSemaphoreGive(dataMutex);
-        }
-
-        jsonStr = "";
-        json.toString(jsonStr);
-        Serial.printf("[CLOUD] Payload: %s\n", jsonStr.c_str());
-        
-        if (jsonStr.length() > 0 && jsonStr != "{}") {
-          object_t payload(jsonStr); 
-=======
           doc["temperature"] = currentShipment.temp;
           doc["humidity"] = currentShipment.hum;
           doc["light_level"] = currentShipment.light;
@@ -381,7 +356,6 @@ void TaskFirebase(void *pvParameters) {
         String jsonStr;
         serializeJson(doc, jsonStr);
         Serial.printf("[CLOUD] Payload: %s\n", jsonStr.c_str());
->>>>>>> Stashed changes
 
         if (jsonStr.length() > 2) {
           object_t payload(jsonStr);
