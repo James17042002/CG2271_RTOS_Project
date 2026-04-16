@@ -57,16 +57,16 @@ volatile uint16_t g_humi_exceeded = 0;  // received from ESP32
 #define UART_RX_PTE23 23
 #define UART2_INT_PRIO 128
 
-#define MAX_MSG_LEN 256
+#define MAX_MSG_LEN 64
 char send_buffer[MAX_MSG_LEN];
 
-#define QLEN 16
+#define QLEN 8
 QueueHandle_t queue;
 
 typedef struct tm {
   char message[MAX_MSG_LEN];
 } TMessage;
-
+ 
 /* ================================================================
  *  RTOS Handles
  * ================================================================ */

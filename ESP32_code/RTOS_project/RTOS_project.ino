@@ -261,7 +261,7 @@ void TaskGeoLocation(void *pvParameters) {
 }
 
 void TaskReceiveFromMCXC444(void *pvParameters) {
-  char buffer[256];
+  char buffer[64];
   int idx = 0;
   int val;
 
@@ -322,7 +322,7 @@ void TaskFirebase(void *pvParameters) {
     }
 
     // 1. Poll Active_Run (Every 10 seconds)
-    if (now - lastPoll >= 10000 || lastPoll == 0) {
+    if (now - lastPoll >= 5000 || lastPoll == 0) {
       if (app.ready()) {
         if (xSemaphoreTake(firebaseMutex, portMAX_DELAY)) {
           Database.get(aClient, "/Active_Run", processData);
