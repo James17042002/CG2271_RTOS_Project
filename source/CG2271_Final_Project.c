@@ -17,11 +17,6 @@
  *  Pin Definitions
  * ================================================================ */
 
-// LED Pins
-#define RED_PIN 31  // PTE31
-#define GREEN_PIN 5 // PTD5
-#define BLUE_PIN 29 // PTE29
-
 // Sensor Pins
 #define HALL_PIN 4  // PTA4
 #define SHOCK_PIN 5 // PTA5
@@ -90,18 +85,18 @@ void initActiveBuzzer(void) {
 void activeBuzzerOn(void) { GPIOB->PSOR |= (1 << ACTIVE_BUZZER_PIN); }
 void activeBuzzerOff(void) { GPIOB->PCOR |= (1 << ACTIVE_BUZZER_PIN); }
 
+#define RED_PIN   4   // PTD2
+#define GREEN_PIN 6   // PTD4
+#define BLUE_PIN  7   // PTD6
+
 void initLEDs(void) {
-  SIM->SCGC5 |= (SIM_SCGC5_PORTD_MASK | SIM_SCGC5_PORTE_MASK);
+  SIM->SCGC5 |= SIM_SCGC5_PORTD_MASK;
 
-  PORTE->PCR[RED_PIN] &= ~PORT_PCR_MUX_MASK;
-  PORTE->PCR[RED_PIN] |= PORT_PCR_MUX(1);
-  PORTE->PCR[BLUE_PIN] &= ~PORT_PCR_MUX_MASK;
-  PORTE->PCR[BLUE_PIN] |= PORT_PCR_MUX(1);
-  PORTD->PCR[GREEN_PIN] &= ~PORT_PCR_MUX_MASK;
-  PORTD->PCR[GREEN_PIN] |= PORT_PCR_MUX(1);
+  PORTD->PCR[RED_PIN]   = (PORTD->PCR[RED_PIN]   & ~PORT_PCR_MUX_MASK) | PORT_PCR_MUX(1);
+  PORTD->PCR[GREEN_PIN] = (PORTD->PCR[GREEN_PIN] & ~PORT_PCR_MUX_MASK) | PORT_PCR_MUX(1);
+  PORTD->PCR[BLUE_PIN]  = (PORTD->PCR[BLUE_PIN]  & ~PORT_PCR_MUX_MASK) | PORT_PCR_MUX(1);
 
-  GPIOE->PDDR |= ((1 << RED_PIN) | (1 << BLUE_PIN));
-  GPIOD->PDDR |= (1 << GREEN_PIN);
+  GPIOD->PDDR |= (1 << RED_PIN) | (1 << GREEN_PIN) | (1 << BLUE_PIN);
 }
 
 void initButtons(void) {
@@ -116,31 +111,22 @@ void initButtons(void) {
  *  LED control (active-low on FRDM board)
  * ================================================================ */
 
+/* External KY-016-style module is common-cathode → ACTIVE HIGH.
+ * PSOR = drive high = on, PCOR = drive low = off.
+ * (Opposite of the on-board LED which is active-low.) */
 void onLED(TLED led) {
   switch (led) {
-  case RED:
-    GPIOE->PCOR |= (1 << RED_PIN);
-    break;
-  case GREEN:
-    GPIOD->PCOR |= (1 << GREEN_PIN);
-    break;
-  case BLUE:
-    GPIOE->PCOR |= (1 << BLUE_PIN);
-    break;
+  case RED:   GPIOD->PSOR = (1 << RED_PIN);   break;
+  case GREEN: GPIOD->PSOR = (1 << GREEN_PIN); break;
+  case BLUE:  GPIOD->PSOR = (1 << BLUE_PIN);  break;
   }
 }
 
 void offLED(TLED led) {
   switch (led) {
-  case RED:
-    GPIOE->PSOR |= (1 << RED_PIN);
-    break;
-  case GREEN:
-    GPIOD->PSOR |= (1 << GREEN_PIN);
-    break;
-  case BLUE:
-    GPIOE->PSOR |= (1 << BLUE_PIN);
-    break;
+  case RED:   GPIOD->PCOR = (1 << RED_PIN);   break;
+  case GREEN: GPIOD->PCOR = (1 << GREEN_PIN); break;
+  case BLUE:  GPIOD->PCOR = (1 << BLUE_PIN);  break;
   }
 }
 
