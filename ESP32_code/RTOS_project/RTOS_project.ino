@@ -6,7 +6,7 @@
 #include <ArduinoJson.h>
 #include <FirebaseClient.h>
 #include <ArduinoJson.h>
-#include <HTTPClient.h> // Added for GeoLocation
+#include <HTTPClient.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 
@@ -78,7 +78,7 @@ SemaphoreHandle_t dataMutex;
 SemaphoreHandle_t uartMutex;
 SemaphoreHandle_t firebaseMutex;
 
-// Helper Function Prototype Declarations (Helper Functions at the bottom)
+// Function Prototypes
 void getGeoLocation(float &lat, float &lng);
 void processData(AsyncResult &aResult);
 void fetchThresholds(void);
@@ -88,7 +88,7 @@ void setup() {
   Serial1.begin(9600, SERIAL_8N1, NEW_RX_PIN, NEW_TX_PIN);
   dht.begin();
 
-  // Connect WiFi FIRST
+  // Initialize WiFi
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   Serial.print("Connecting to WiFi");
   while (WiFi.status() != WL_CONNECTED) {
@@ -98,8 +98,7 @@ void setup() {
   Serial.println("\nWiFi connected, IP: " + WiFi.localIP().toString());
 
   // Initialize Firebase
-  ssl_client
-      .setInsecure(); // Required for ESP32 to skip certificate chain validation
+  ssl_client.setInsecure();
   initializeApp(aClient, app, getAuth(user_auth), processData);
   app.getApp<RealtimeDatabase>(Database);
   Database.url(DATABASE_URL);
@@ -120,37 +119,31 @@ void setup() {
 }
 
 void TaskWiFiManager(void *pvParameters) {
-  const int maxRetryTime = 30000; // 30 seconds grace period
+  const int maxRetryTime = 30000;
   int lostConnectionAt = 0;
   bool isConnectionLost = false;
 
   for (;;) {
     if (WiFi.status() != WL_CONNECTED) {
       if (!isConnectionLost) {
-        // Record the time when connection was first lost
         lostConnectionAt = millis();
         isConnectionLost = true;
         Serial.println("[WIFI] Connection lost! Starting grace period...");
       }
 
-      // Check if we have been disconnected longer than the grace period
       if (millis() - lostConnectionAt > maxRetryTime) {
         Serial.println(
             "[WIFI] Critical: Connection lost for >30s. Rebooting...");
-        vTaskDelay(
-            pdMS_TO_TICKS(500)); // Brief delay for Serial prints to clear
+        vTaskDelay(pdMS_TO_TICKS(500));
         ESP.restart();
       }
     } else {
-      // Connection is healthy
       if (isConnectionLost) {
         Serial.println("[WIFI] Connection restored.");
         isConnectionLost = false;
       }
     }
 
-    // Check status and memory every 5 seconds
-    // Serial.printf("[SYSTEM] Free Heap: %u bytes\n", ESP.getFreeHeap());
     vTaskDelay(pdMS_TO_TICKS(5000));
   }
 }
@@ -273,21 +266,14 @@ void TaskReceiveFromMCXC444(void *pvParameters) {
         Serial.printf("[MCU] %s\n", buffer);
 
         if (xSemaphoreTake(dataMutex, portMAX_DELAY)) {
-          // 1. Parsing Shock Count
           if (sscanf(buffer, "SHOCK:%d", &val) == 1) {
             currentShipment.shockCount = val;
-          }
-          // 2. Parsing Box Open Count
-          else if (sscanf(buffer, "BOX_OPEN:%d", &val) == 1) {
+          } else if (sscanf(buffer, "BOX_OPEN:%d", &val) == 1) {
             currentShipment.boxOpenCount = val;
             strncpy(currentShipment.status, "Box Opened", 63);
-          }
-          // 3. Parsing Box Closed
-          else if (strstr(buffer, "BOX_CLOSED") != NULL) {
+          } else if (strstr(buffer, "BOX_CLOSED") != NULL) {
             strncpy(currentShipment.status, "Box Closed", 63);
-          }
-          // 4. Fallback for other messages
-          else {
+          } else {
             strncpy(currentShipment.status, buffer, 63);
           }
           xSemaphoreGive(dataMutex);
@@ -308,7 +294,6 @@ void TaskFirebase(void *pvParameters) {
   for (;;) {
     uint32_t now = millis();
 
-    // 0. Handle asynchronous triggers (decoupled from callbacks)
     if (mcuNotifyState) {
       if (xSemaphoreTake(uartMutex, portMAX_DELAY)) {
         Serial1.printf("RUN:%d\n", isActiveRun ? 1 : 0);
@@ -321,7 +306,6 @@ void TaskFirebase(void *pvParameters) {
       needConfigFetch = false;
     }
 
-    // 1. Poll Active_Run (Every 10 seconds)
     if (now - lastPoll >= 5000 || lastPoll == 0) {
       if (app.ready()) {
         if (xSemaphoreTake(firebaseMutex, portMAX_DELAY)) {
@@ -332,7 +316,6 @@ void TaskFirebase(void *pvParameters) {
       lastPoll = now;
     }
 
-    // 2. Push Shipment Logs (Every 30 seconds, only if active)
     if (now - lastPush >= 30000) {
       if (app.ready() && isActiveRun) {
         StaticJsonDocument<512> doc;
@@ -371,19 +354,16 @@ void TaskFirebase(void *pvParameters) {
       lastPush = now;
     }
 
-    vTaskDelay(pdMS_TO_TICKS(5000)); // Sleep for 1s between checks
+    vTaskDelay(pdMS_TO_TICKS(5000));
   }
 }
 
 void loop() {
-  // Required to maintain Firebase Auth and Async tasks
   app.loop();
 }
 
 // Helper Functions
 void getGeoLocation(float &lat, float &lng) {
-  // Use a local WiFiClient to ensure it doesn't interfere with the global SSL
-  // client
   WiFiClient client;
   HTTPClient http;
 
@@ -438,17 +418,13 @@ void processData(AsyncResult &aResult) {
   if (aResult.available()) {
     String path = aResult.path();
 
-    // 1. Handle Active_Run State Change
     if (path == "/Active_Run") {
       isActiveRun = aResult.to<RealtimeDatabaseResult>().to<bool>();
-
-      // Signal triggers to TaskFirebase (Avoid network/UART calls in callback)
       mcuNotifyState = true;
 
       Serial.printf("[SYSTEM] Active_Run is now: %s\n",
                     isActiveRun ? "TRUE" : "FALSE");
 
-      // Detection of Run Start (transition from FALSE to TRUE)
       if (isActiveRun && !prevRunState) {
         Serial.println("[SYSTEM] Run start detected signal...");
         
@@ -466,7 +442,6 @@ void processData(AsyncResult &aResult) {
       prevRunState = isActiveRun;
     }
 
-    // 2. Handle run_config Thresholds
     else if (path == "/run_config/temp_threshold") {
       tempThreshold = aResult.to<RealtimeDatabaseResult>().to<float>();
       Serial.printf("[CONFIG] temp_threshold updated: %.2f\n", tempThreshold);
@@ -479,7 +454,6 @@ void processData(AsyncResult &aResult) {
       Serial.printf("[CONFIG] light_threshold updated: %d\n", lightThreshold);
     }
 
-    // 3. Handle Other Updates (General Success)
     else {
       Serial.printf("Firebase OK: %s\n", path.c_str());
     }

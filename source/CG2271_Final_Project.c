@@ -29,6 +29,10 @@
 
 typedef enum tl { RED, GREEN, BLUE } TLED;
 
+#define RED_PIN 4   // PTD2
+#define GREEN_PIN 6 // PTD4
+#define BLUE_PIN 7  // PTD6
+
 /* ================================================================
  *  Global State
  * ================================================================ */
@@ -61,14 +65,14 @@ QueueHandle_t queue;
 typedef struct tm {
   char message[MAX_MSG_LEN];
 } TMessage;
- 
+
 /* ================================================================
  *  RTOS Handles
  * ================================================================ */
 
 SemaphoreHandle_t shock_sema;
 SemaphoreHandle_t hall_sema;
-SemaphoreHandle_t uart_tx_sema; /* taken by sender, given back by ISR when TX done */
+SemaphoreHandle_t uart_tx_sema;
 
 /* ================================================================
  *  Peripheral Init
@@ -85,16 +89,15 @@ void initActiveBuzzer(void) {
 void activeBuzzerOn(void) { GPIOB->PSOR |= (1 << ACTIVE_BUZZER_PIN); }
 void activeBuzzerOff(void) { GPIOB->PCOR |= (1 << ACTIVE_BUZZER_PIN); }
 
-#define RED_PIN   4   // PTD2
-#define GREEN_PIN 6   // PTD4
-#define BLUE_PIN  7   // PTD6
-
 void initLEDs(void) {
   SIM->SCGC5 |= SIM_SCGC5_PORTD_MASK;
 
-  PORTD->PCR[RED_PIN]   = (PORTD->PCR[RED_PIN]   & ~PORT_PCR_MUX_MASK) | PORT_PCR_MUX(1);
-  PORTD->PCR[GREEN_PIN] = (PORTD->PCR[GREEN_PIN] & ~PORT_PCR_MUX_MASK) | PORT_PCR_MUX(1);
-  PORTD->PCR[BLUE_PIN]  = (PORTD->PCR[BLUE_PIN]  & ~PORT_PCR_MUX_MASK) | PORT_PCR_MUX(1);
+  PORTD->PCR[RED_PIN] =
+      (PORTD->PCR[RED_PIN] & ~PORT_PCR_MUX_MASK) | PORT_PCR_MUX(1);
+  PORTD->PCR[GREEN_PIN] =
+      (PORTD->PCR[GREEN_PIN] & ~PORT_PCR_MUX_MASK) | PORT_PCR_MUX(1);
+  PORTD->PCR[BLUE_PIN] =
+      (PORTD->PCR[BLUE_PIN] & ~PORT_PCR_MUX_MASK) | PORT_PCR_MUX(1);
 
   GPIOD->PDDR |= (1 << RED_PIN) | (1 << GREEN_PIN) | (1 << BLUE_PIN);
 }
@@ -111,22 +114,31 @@ void initButtons(void) {
  *  LED control (active-low on FRDM board)
  * ================================================================ */
 
-/* External KY-016-style module is common-cathode → ACTIVE HIGH.
- * PSOR = drive high = on, PCOR = drive low = off.
- * (Opposite of the on-board LED which is active-low.) */
 void onLED(TLED led) {
   switch (led) {
-  case RED:   GPIOD->PSOR = (1 << RED_PIN);   break;
-  case GREEN: GPIOD->PSOR = (1 << GREEN_PIN); break;
-  case BLUE:  GPIOD->PSOR = (1 << BLUE_PIN);  break;
+  case RED:
+    GPIOD->PSOR = (1 << RED_PIN);
+    break;
+  case GREEN:
+    GPIOD->PSOR = (1 << GREEN_PIN);
+    break;
+  case BLUE:
+    GPIOD->PSOR = (1 << BLUE_PIN);
+    break;
   }
 }
 
 void offLED(TLED led) {
   switch (led) {
-  case RED:   GPIOD->PCOR = (1 << RED_PIN);   break;
-  case GREEN: GPIOD->PCOR = (1 << GREEN_PIN); break;
-  case BLUE:  GPIOD->PCOR = (1 << BLUE_PIN);  break;
+  case RED:
+    GPIOD->PCOR = (1 << RED_PIN);
+    break;
+  case GREEN:
+    GPIOD->PCOR = (1 << GREEN_PIN);
+    break;
+  case BLUE:
+    GPIOD->PCOR = (1 << BLUE_PIN);
+    break;
   }
 }
 
@@ -174,7 +186,8 @@ void UART2_FLEXIO_IRQHandler(void) {
     if (send_buffer[send_ptr] == '\0') {
       send_ptr = 0;
       UART2->C2 &= ~UART_C2_TIE_MASK;
-      xSemaphoreGiveFromISR(uart_tx_sema, &hpw); /* release slot for next message */
+      xSemaphoreGiveFromISR(uart_tx_sema,
+                            &hpw); /* release slot for next message */
     } else {
       UART2->D = send_buffer[send_ptr++];
     }
@@ -198,11 +211,9 @@ void UART2_FLEXIO_IRQHandler(void) {
 }
 
 void sendMessage(char *message) {
-  /* Block until the previous transmission has finished, then claim the buffer */
   if (xSemaphoreTake(uart_tx_sema, pdMS_TO_TICKS(500)) == pdTRUE) {
     strncpy(send_buffer, message, MAX_MSG_LEN);
     UART2->C2 |= UART_C2_TIE_MASK;
-    /* uart_tx_sema given back by ISR once the last byte is sent */
   }
 }
 
@@ -294,7 +305,6 @@ static void lcdTask(void *p) {
   char buf[5];
   bool prev_active = false;
 
-  /* Snapshot of counters — frozen when run ends */
   uint16_t snap_shock = 0;
   uint16_t snap_box_open = 0;
   uint16_t snap_humi = 0;
@@ -303,7 +313,6 @@ static void lcdTask(void *p) {
 
   while (1) {
     if (g_run_active) {
-      /* Live — read directly from globals */
       snap_shock = g_shock_count;
       snap_box_open = g_box_open_count;
       snap_humi = g_humi_exceeded;
@@ -311,29 +320,47 @@ static void lcdTask(void *p) {
       snap_temp = g_temp_exceeded;
       prev_active = true;
     } else if (prev_active) {
-      /* Just ended — snapshot is already frozen from last loop */
       prev_active = false;
     }
-    /* else: idle — snapshots stay as they were */
 
     /* ---- show label ---- */
     switch (page) {
-    case 0: SLCD_ShowString("Shoc"); break;
-    case 1: SLCD_ShowString("OPEn"); break;
-    case 2: SLCD_ShowString("HuEd"); break;
-    case 3: SLCD_ShowString("LtEd"); break;
-    case 4: SLCD_ShowString("tPEd"); break;
+    case 0:
+      SLCD_ShowString("Shoc");
+      break;
+    case 1:
+      SLCD_ShowString("OPEn");
+      break;
+    case 2:
+      SLCD_ShowString("HuEd");
+      break;
+    case 3:
+      SLCD_ShowString("LtEd");
+      break;
+    case 4:
+      SLCD_ShowString("tPEd");
+      break;
     }
     vTaskDelay(pdMS_TO_TICKS(1000));
 
     /* ---- show value ---- */
     uint16_t val = 0;
     switch (page) {
-    case 0: val = snap_shock;    break;
-    case 1: val = snap_box_open; break;
-    case 2: val = snap_humi;     break;
-    case 3: val = snap_light;    break;
-    case 4: val = snap_temp;     break;
+    case 0:
+      val = snap_shock;
+      break;
+    case 1:
+      val = snap_box_open;
+      break;
+    case 2:
+      val = snap_humi;
+      break;
+    case 3:
+      val = snap_light;
+      break;
+    case 4:
+      val = snap_temp;
+      break;
     }
     snprintf(buf, 5, "%4u", val);
     SLCD_ShowString(buf);
@@ -373,25 +400,19 @@ void shockTask(void *p) {
  */
 void hallTask(void *pvParameters) {
   char buffer[MAX_MSG_LEN];
-  /* Read the actual pin to seed — HIGH = open, LOW = closed */
   bool prev_open = (GPIOA->PDIR & (1 << HALL_PIN)) != 0;
   g_is_box_open = prev_open;
 
   while (1) {
     xSemaphoreTake(hall_sema, portMAX_DELAY);
 
-    /* Short debounce — let pin settle */
     vTaskDelay(pdMS_TO_TICKS(80));
 
-    /* Drain any extra semaphore gives from bouncing */
-    while (xSemaphoreTake(hall_sema, 0) == pdTRUE) { }
+    while (xSemaphoreTake(hall_sema, 0) == pdTRUE) {
+    }
 
-    /* === ALWAYS READ THE ACTUAL PIN STATE === */
-    /* KY-003: LOW = LED on = magnet close = closed */
-    /* KY-003: HIGH = LED off = magnet away = open  */
     bool is_open = (GPIOA->PDIR & (1 << HALL_PIN)) != 0;
 
-    /* Only act on real state change */
     if (is_open != prev_open) {
       prev_open = is_open;
       g_is_box_open = is_open;
@@ -457,36 +478,33 @@ static void recvTask(void *p) {
   while (1) {
     TMessage msg;
     if (xQueueReceive(queue, &msg, portMAX_DELAY) == pdTRUE) {
-    	if (sscanf(msg.message, "RUN:%d", &val) == 1) {
-    	    bool new_state = (val == 1);
+      if (sscanf(msg.message, "RUN:%d", &val) == 1) {
+        bool new_state = (val == 1);
 
-    	    /* Only reset on the rising edge: was idle, now active */
-    	    if (new_state && !g_run_active) {
-    	        g_shock_count = 0;
-    	        g_box_open_count = 0;
-    	        g_temp_exceeded = 0;
-    	        g_light_exceeded = 0;
-    	        g_humi_exceeded = 0;
-    	        /* Re-read the ACTUAL pin instead of forcing false */
-    	        g_is_box_open = (GPIOA->PDIR & (1 << HALL_PIN)) != 0;
-    	        PRINTF("New run started — counters reset\r\n");
-    	    }
+        if (new_state && !g_run_active) {
+          g_shock_count = 0;
+          g_box_open_count = 0;
+          g_temp_exceeded = 0;
+          g_light_exceeded = 0;
+          g_humi_exceeded = 0;
+          g_is_box_open = (GPIOA->PDIR & (1 << HALL_PIN)) != 0;
+          PRINTF("New run started — counters reset\r\n");
+        }
 
-          if (!new_state && g_run_active) {
-              /* Transition to idle — silence buzzer and reset counters */
-              activeBuzzerOff();
-              g_shock_count = 0;
-              g_box_open_count = 0;
-              g_temp_exceeded = 0;
-              g_light_exceeded = 0;
-              g_humi_exceeded = 0;
-              PRINTF("Run ended — counters reset\r\n");
-          }
-          
-    	    g_run_active = new_state;
-    	    PRINTF("Run state: %s\r\n", g_run_active ? "ACTIVE" : "IDLE");
+        if (!new_state && g_run_active) {
+          activeBuzzerOff();
+          g_shock_count = 0;
+          g_box_open_count = 0;
+          g_temp_exceeded = 0;
+          g_light_exceeded = 0;
+          g_humi_exceeded = 0;
+          PRINTF("Run ended — counters reset\r\n");
+        }
 
-    	} else if (sscanf(msg.message, "TEXC:%d", &val) == 1) {
+        g_run_active = new_state;
+        PRINTF("Run state: %s\r\n", g_run_active ? "ACTIVE" : "IDLE");
+
+      } else if (sscanf(msg.message, "TEXC:%d", &val) == 1) {
         g_temp_exceeded = (uint16_t)val;
         PRINTF("Temp exceeded count: %u\r\n", g_temp_exceeded);
 
@@ -526,7 +544,7 @@ void resetTask(void *pvParameters) {
       g_humi_exceeded = 0;
       g_is_box_open = false;
       activeBuzzerOff();
-      vTaskDelay(pdMS_TO_TICKS(500)); /* debounce */
+      vTaskDelay(pdMS_TO_TICKS(500));
     }
     vTaskDelay(pdMS_TO_TICKS(50));
   }
@@ -552,12 +570,10 @@ int main(void) {
   initActiveBuzzer();
   activeBuzzerOff();
   initIRQ();
-  /* KY-003: HIGH = no magnet = open,  LOW = magnet = closed */
   g_is_box_open = (GPIOA->PDIR & (1 << HALL_PIN)) != 0;
   initButtons();
   initUART2(BAUD_RATE);
 
-  /* Initialise on-board segment LCD — start in idle */
   SLCD_DisplayInit();
   SLCD_ShowString("IDLE");
 
@@ -567,7 +583,7 @@ int main(void) {
   hall_sema = xSemaphoreCreateBinary();
   shock_sema = xSemaphoreCreateBinary();
   uart_tx_sema = xSemaphoreCreateBinary();
-  xSemaphoreGive(uart_tx_sema); /* pre-load one token — ready to send immediately */
+  xSemaphoreGive(uart_tx_sema);
 
   xTaskCreate(shockTask, "shockTask", configMINIMAL_STACK_SIZE + 100, NULL, 1,
               NULL);
@@ -579,8 +595,8 @@ int main(void) {
               NULL);
   xTaskCreate(indicatorTask, "indicatorTask", configMINIMAL_STACK_SIZE + 100,
               NULL, 1, NULL);
-  xTaskCreate(buzzerTask, "buzzerTask", configMINIMAL_STACK_SIZE + 100, NULL,
-              1, NULL);
+  xTaskCreate(buzzerTask, "buzzerTask", configMINIMAL_STACK_SIZE + 100, NULL, 1,
+              NULL);
   xTaskCreate(resetTask, "resetTask", configMINIMAL_STACK_SIZE + 100, NULL, 1,
               NULL);
 
